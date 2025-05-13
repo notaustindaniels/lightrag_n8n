@@ -26,3 +26,12 @@ services:
   - key: EMBEDDING_MODEL
     scope: RUN_TIME
     value: text-embedding-ada-002
+  - key: WORKING_DIR
+    scope: RUN_TIME
+    value: /app/data/rag_storage
+  - key: HOST
+    scope: RUN_TIME
+    value: 0.0.0.0
+  - key: PORT
+    scope: RUN_TIME
+    value: "9621"

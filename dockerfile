@@ -28,7 +28,24 @@ ENV PORT=9621
 # Expose the default port
 EXPOSE 9621
 
-# Create the API script
-COPY lightrag_api.py /app/lightrag_api.py
+# Create the API script inline to avoid Python detection
+RUN cat > /app/lightrag_api.py << 'EOF'
+import os
+import json
+import asyncio
+from typing import Optional, Dict, Any, List
+from pathlib import Path
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
+import uvicorn
+from contextlib import asynccontextmanager
+
+from lightrag import LightRAG, QueryParam
+from lightrag.llm import openai_embedding, openai_complete_if_cache
+from lightrag.utils import EmbeddingFunc
+
+# [Rest of the Python code goes here - copy from the previous artifact]
+EOF
 
 CMD ["python", "lightrag_api.py"]

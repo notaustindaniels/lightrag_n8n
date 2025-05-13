@@ -13,13 +13,17 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm import openai_embedding, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
-# Environment variables
-WORKING_DIR = os.getenv("WORKING_DIR", "./data/rag_storage")
+# Environment variables with safe defaults
+WORKING_DIR = os.getenv("WORKING_DIR", "/app/data/rag_storage")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.getenv("EMBEDDING_MAX_TOKEN_SIZE", "8192"))
+
+# Validate required environment variables
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is required")
 
 class QueryRequest(BaseModel):
     query: str
