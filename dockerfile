@@ -1,3 +1,4 @@
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -9,12 +10,17 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone LightRAG repository
-RUN git clone https://github.com/HKUDS/LightRAG.git .
+RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
+
+# Copy necessary files from LightRAG
+RUN cp -r /tmp/lightrag/lightrag /app/lightrag && \
+    cp /tmp/lightrag/setup.py /app/setup.py && \
+    cp /tmp/lightrag/requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install .
+RUN pip install fastapi uvicorn[standard] python-multipart aiofiles
 
 # Create necessary directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs
@@ -25,27 +31,10 @@ ENV INPUT_DIR=/app/data/inputs
 ENV HOST=0.0.0.0
 ENV PORT=9621
 
+# Copy the API script
+COPY lightrag_api.py /app/lightrag_api.py
+
 # Expose the default port
 EXPOSE 9621
-
-# Create the API script inline to avoid Python detection
-RUN cat > /app/lightrag_api.py << 'EOF'
-import os
-import json
-import asyncio
-from typing import Optional, Dict, Any, List
-from pathlib import Path
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-import uvicorn
-from contextlib import asynccontextmanager
-
-from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_embedding, openai_complete_if_cache
-from lightrag.utils import EmbeddingFunc
-
-# [Rest of the Python code goes here - copy from the previous artifact]
-EOF
 
 CMD ["python", "lightrag_api.py"]

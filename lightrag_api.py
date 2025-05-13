@@ -23,7 +23,7 @@ EMBEDDING_MAX_TOKEN_SIZE = int(os.getenv("EMBEDDING_MAX_TOKEN_SIZE", "8192"))
 
 # Validate required environment variables
 if not OPENAI_API_KEY:
-    raise ValueError("OPENAI_API_KEY environment variable is required")
+    print("WARNING: OPENAI_API_KEY environment variable is not set")
 
 class QueryRequest(BaseModel):
     query: str
