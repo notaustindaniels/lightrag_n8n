@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+aiofiles
+python-multipart
+openai
+numpy
+scipy
+networkx
+jieba
+spacy
+nano-vectordb

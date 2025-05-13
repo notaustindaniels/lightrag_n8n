@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  lightrag:
+    build: .
+    ports:
+      - "9621:9621"
+    volumes:
+      - ./data:/app/data
+      - ./config.ini:/app/config.ini
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-ada-002}
+      - WORKING_DIR=/app/data/rag_storage
+      - HOST=0.0.0.0
+      - PORT=9621
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9621/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
