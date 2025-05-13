@@ -10,7 +10,7 @@ import uvicorn
 from contextlib import asynccontextmanager
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_embedding, openai_complete_if_cache
+from lightrag.llm.openai import openai_embed, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
 # Environment variables with safe defaults
@@ -69,7 +69,7 @@ def get_rag_instance(doc_id: str) -> LightRAG:
                 **kwargs
             ),
             embedding_func=EmbeddingFunc(
-                func=lambda texts: openai_embedding(
+                func=lambda texts: openai_embed(
                     texts,
                     model=EMBEDDING_MODEL,
                     api_key=OPENAI_API_KEY,
