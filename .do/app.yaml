@@ -1,0 +1,28 @@
+name: lightrag-app
+services:
+- dockerfile_path: Dockerfile
+  github:
+    branch: main
+    deploy_on_push: true
+    repo: your-github-username/your-repo-name
+  http_port: 9621
+  instance_count: 1
+  instance_size_slug: basic-xs
+  name: lightrag
+  routes:
+  - path: /
+  run_command: python lightrag_api.py
+  source_dir: /
+  envs:
+  - key: OPENAI_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: OPENAI_BASE_URL
+    scope: RUN_TIME
+    value: https://api.openai.com/v1
+  - key: LLM_MODEL
+    scope: RUN_TIME
+    value: gpt-4
+  - key: EMBEDDING_MODEL
+    scope: RUN_TIME
+    value: text-embedding-ada-002
