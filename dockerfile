@@ -8,10 +8,10 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone and install LightRAG
+# Clone and install LightRAG with web UI support
 RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag && \
     cd /tmp/lightrag && \
-    pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir -e ".[api,webui]" && \
     cd /app
 
 # Copy requirements and install additional dependencies
@@ -26,6 +26,7 @@ ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 ENV HOST=0.0.0.0
 ENV PORT=9621
+ENV ENABLE_WEBUI=true
 
 # Copy the API script
 COPY lightrag_api.py /app/lightrag_api.py

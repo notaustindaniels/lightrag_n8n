@@ -49,7 +49,45 @@ async def lifespan(app: FastAPI):
     # Shutdown logic
     print("Shutting down LightRAG API Server...")
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    title="LightRAG API",
+    description="API for LightRAG document processing and querying",
+    version="1.0.0"
+)
+
+# Mount the web UI if enabled
+if os.getenv("ENABLE_WEBUI", "false").lower() in ("true", "1", "yes"):
+    from fastapi.staticfiles import StaticFiles
+    try:
+        # Try to find the web UI package
+        import importlib.util
+        webui_path = importlib.util.find_spec("lightrag.api.webui")
+        if webui_path:
+            static_dir = os.path.dirname(webui_path.origin)
+            app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+            print(f"Web UI enabled at /ui path")
+        else:
+            print("Web UI package not found. Make sure lightrag is installed with [webui] extra.")
+    except ImportError:
+        print("Web UI package not found. Make sure lightrag is installed with [webui] extra.")
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information."""
+    webui_enabled = os.getenv("ENABLE_WEBUI", "false").lower() in ("true", "1", "yes")
+    return {
+        "message": "Welcome to LightRAG API",
+        "documentation": "/docs",
+        "web_ui": "/ui" if webui_enabled else None,
+        "endpoints": {
+            "health": "/health",
+            "insert": "/insert",
+            "query": "/query",
+            "route_query": "/route_query",
+            "clear": "/clear/{doc_id}"
+        }
+    }
 
 def get_rag_instance(doc_id: str) -> LightRAG:
     """Get or create a LightRAG instance for a specific document."""
