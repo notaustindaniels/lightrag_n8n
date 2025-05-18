@@ -35,7 +35,7 @@ PORT=9621\n\
 EMBEDDING_BINDING=openai\n\
 EMBEDDING_MODEL=text-embedding-ada-002\n\
 LLM_BINDING=openai\n\
-LLM_MODEL=gpt-4\n" > /app/.env
+LLM_MODEL=gpt-4" > /app/.env
 
 # Create a simple script to start the server
 RUN echo '#!/bin/bash\n\
