@@ -23,7 +23,7 @@ services:
     ports:
       - "9622:9622"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/datac
       - ./simple_delete_api.py:/app/simple_delete_api.py
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
