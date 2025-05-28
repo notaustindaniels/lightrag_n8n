@@ -1,21 +1,21 @@
 # Enhanced LightRAG with Extended API
 
-This repository extends the LightRAG REST API to solve the file_path validation error and add enhanced document management capabilities.
+This repository extends the LightRAG REST API to solve the file_path validation error and add enhanced document management capabilities, while preserving the original web UI.
 
 ## Problem Solved
 
-The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field when inserting documents, which causes a Pydantic validation error when retrieving documents via the `/documents` endpoint. This enhanced version fixes this issue and adds additional functionality.
+The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field when inserting documents, which causes a Pydantic validation error when retrieving documents via the `/documents` endpoint. This enhanced version fixes this issue and adds additional functionality while keeping the web UI intact.
 
 ## Key Features
 
 1. **Extended REST API** (`lightrag_extended_api.py`):
-   - Preserves the original LightRAG web UI at the root URL
+   - Extends the standard LightRAG server (preserves web UI at `/webui`)
    - Fixes the file_path validation error by ensuring all documents have a file_path
    - Adds `/documents/text/enhanced` endpoint for rich metadata insertion
    - Adds `/documents/by-sitemap/{sitemap_url}` for sitemap-specific queries
    - Adds `/documents/by-sitemap/{sitemap_url}` DELETE endpoint for bulk deletion (returns success even if no documents exist)
    - Maintains an in-memory metadata store that persists to disk
-   - Fully compatible with existing LightRAG Python API and web UI
+   - Fully compatible with existing LightRAG Python API
 
 2. **Enhanced n8n Workflow**:
    - Automatically attempts to delete old documents from a sitemap before re-indexing (handles 404 gracefully)
@@ -23,6 +23,11 @@ The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field
    - Tracks source URLs and document indices
    - Provides better error handling and retry logic
    - Simplified: uses sitemap URL directly without redundant identifiers
+
+3. **Web UI Access**:
+   - The original LightRAG web UI is available at `/webui`
+   - All standard LightRAG API endpoints remain functional
+   - Extended endpoints seamlessly integrate with the existing system
 
 ## How It Works
 
@@ -98,9 +103,7 @@ Delete specific documents by their IDs:
    docker-compose up -d
    ```
 
-3. Access the web UI at http://localhost:9621 (or your deployment URL)
-
-4. Import the enhanced n8n workflow and update the endpoint URLs to match your deployment
+3. Import the enhanced n8n workflow and update the endpoint URLs to match your deployment
 
 ## Environment Variables
 
@@ -130,12 +133,14 @@ Update these nodes with your deployment URLs:
 ## Benefits
 
 1. **No more validation errors** - All documents have proper file_path values
-2. **Better document management** - Track sources, sitemaps, and metadata
-3. **Bulk operations** - Delete all documents from a sitemap in one call
-4. **Backward compatible** - Works with existing LightRAG features
-5. **Persistent metadata** - Document metadata survives restarts
-6. **Simplified workflow** - No need for redundant sitemap identifiers
-7. **Graceful error handling** - Deletion works even if no documents exist
+2. **Web UI preserved** - Access the familiar LightRAG interface at `/webui`
+3. **Better document management** - Track sources, sitemaps, and metadata
+4. **Bulk operations** - Delete all documents from a sitemap in one call
+5. **Backward compatible** - Works with existing LightRAG features
+6. **Persistent metadata** - Document metadata survives restarts
+7. **Simplified workflow** - No need for redundant sitemap identifiers
+8. **Graceful error handling** - Deletion works even if no documents exist
+9. **All standard endpoints available** - Query, search, and manage as usual
 
 ## Testing
 
@@ -144,7 +149,10 @@ Update these nodes with your deployment URLs:
    curl http://localhost:9621/health
    ```
 
-2. Insert a test document:
+2. Access the web UI:
+   Open http://localhost:9621/webui in your browser
+
+3. Insert a test document:
    ```bash
    curl -X POST http://localhost:9621/documents/text/enhanced \
      -H "Content-Type: application/json" \
@@ -155,7 +163,7 @@ Update these nodes with your deployment URLs:
      }'
    ```
 
-3. View documents (no more errors!):
+4. View documents (no more errors!):
    ```bash
    curl http://localhost:9621/documents
    ```

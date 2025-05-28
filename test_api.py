@@ -17,6 +17,14 @@ def test_health():
     print(f"Response: {response.json()}")
     print()
 
+def test_webui():
+    """Test web UI availability"""
+    print("Testing web UI endpoint...")
+    response = requests.get(f"{BASE_URL}/webui")
+    print(f"Status: {response.status_code}")
+    print(f"Web UI available: {'Yes' if response.status_code == 200 else 'No'}")
+    print()
+
 def test_enhanced_insert():
     """Test enhanced document insertion"""
     print("Testing enhanced document insertion...")
@@ -118,6 +126,7 @@ if __name__ == "__main__":
     
     # Run tests
     test_health()
+    test_webui()
     
     # Insert a document
     doc_id = test_enhanced_insert()
@@ -138,3 +147,4 @@ if __name__ == "__main__":
     test_delete_by_sitemap()
     
     print("\nTest suite completed!")
+    print(f"Web UI available at: {BASE_URL}/webui")

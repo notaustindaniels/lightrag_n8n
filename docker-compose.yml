@@ -9,6 +9,7 @@ services:
       - ./data:/app/data
       - ./lightrag_extended_api.py:/app/lightrag_extended_api.py
       - ./migrate_metadata.py:/app/migrate_metadata.py
+      - ./config.ini:/app/config.ini
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}

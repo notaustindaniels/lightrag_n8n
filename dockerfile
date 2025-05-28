@@ -9,16 +9,10 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages including lightrag with API support
+# Install Python packages
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir lightrag-hku[api] && \
     pip install --no-cache-dir fastapi uvicorn[standard] python-multipart aiofiles wcwidth pydantic
-
-# Clone LightRAG to ensure we have the web UI files
-RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag && \
-    if [ -d "/tmp/lightrag/lightrag/api/webui" ]; then \
-        cp -r /tmp/lightrag/lightrag/api/webui /app/webui; \
-    fi
 
 # Copy the extended API and migration script
 COPY lightrag_extended_api.py /app/
@@ -37,5 +31,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose the port
 EXPOSE 9621
 
-# Run the extended API server which includes the web UI
+# Run the extended API server (which includes the standard server with web UI)
 CMD ["python", "/app/lightrag_extended_api.py"]
