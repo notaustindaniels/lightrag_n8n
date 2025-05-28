@@ -9,12 +9,13 @@ The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field
 ## Key Features
 
 1. **Extended REST API** (`lightrag_extended_api.py`):
+   - Preserves the original LightRAG web UI at the root URL
    - Fixes the file_path validation error by ensuring all documents have a file_path
    - Adds `/documents/text/enhanced` endpoint for rich metadata insertion
    - Adds `/documents/by-sitemap/{sitemap_url}` for sitemap-specific queries
    - Adds `/documents/by-sitemap/{sitemap_url}` DELETE endpoint for bulk deletion (returns success even if no documents exist)
    - Maintains an in-memory metadata store that persists to disk
-   - Fully compatible with existing LightRAG Python API
+   - Fully compatible with existing LightRAG Python API and web UI
 
 2. **Enhanced n8n Workflow**:
    - Automatically attempts to delete old documents from a sitemap before re-indexing (handles 404 gracefully)
@@ -97,7 +98,9 @@ Delete specific documents by their IDs:
    docker-compose up -d
    ```
 
-3. Import the enhanced n8n workflow and update the endpoint URLs to match your deployment
+3. Access the web UI at http://localhost:9621 (or your deployment URL)
+
+4. Import the enhanced n8n workflow and update the endpoint URLs to match your deployment
 
 ## Environment Variables
 
