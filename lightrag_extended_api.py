@@ -33,7 +33,7 @@ class EnhancedTextInsertRequest(BaseModel):
     text: str
     description: Optional[str] = None
     source_url: Optional[str] = None
-    sitemap_identifier: Optional[str] = None
+    sitemap_url: Optional[str] = None
     doc_index: Optional[int] = None
     total_docs: Optional[int] = None
 
@@ -41,6 +41,7 @@ class DocumentMetadata(BaseModel):
     id: str
     file_path: Optional[str] = None
     source_url: Optional[str] = None
+    sitemap_url: Optional[str] = None
     description: Optional[str] = None
     indexed_at: Optional[str] = None
     content_summary: Optional[str] = None
@@ -140,8 +141,8 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         metadata_parts = []
         if request.source_url:
             metadata_parts.append(f"[SOURCE_URL: {request.source_url}]")
-        if request.sitemap_identifier:
-            metadata_parts.append(request.sitemap_identifier)
+        if request.sitemap_url:
+            metadata_parts.append(f"[SITEMAP: {request.sitemap_url}]")
         metadata_parts.append(f"[INDEXED: {datetime.utcnow().isoformat()}]")
         if request.doc_index and request.total_docs:
             metadata_parts.append(f"[DOC_INDEX: {request.doc_index} of {request.total_docs}]")
@@ -165,7 +166,7 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             "source_url": request.source_url,
             "description": request.description,
             "indexed_at": datetime.utcnow().isoformat(),
-            "sitemap_identifier": request.sitemap_identifier,
+            "sitemap_url": request.sitemap_url,
             "doc_index": request.doc_index,
             "total_docs": request.total_docs,
             "content_summary": enriched_content[:200] + "..." if len(enriched_content) > 200 else enriched_content
@@ -254,14 +255,16 @@ async def get_documents():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/documents/by-sitemap/{sitemap_identifier}")
-async def get_documents_by_sitemap(sitemap_identifier: str):
-    """Get all documents for a specific sitemap"""
+@app.get("/documents/by-sitemap/{sitemap_url:path}")
+async def get_documents_by_sitemap(sitemap_url: str):
+    """Get all documents for a specific sitemap URL"""
     try:
         matching_docs = []
         
         for doc_id, metadata in metadata_store.items():
-            if metadata.get('sitemap_identifier') == sitemap_identifier:
+            # Check both sitemap_url and sitemap_identifier (for legacy support)
+            if (metadata.get('sitemap_url') == sitemap_url or 
+                metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
                 matching_docs.append({
                     "doc_id": doc_id,
                     "source_url": metadata.get('source_url'),
@@ -270,7 +273,7 @@ async def get_documents_by_sitemap(sitemap_identifier: str):
                 })
         
         return {
-            "sitemap_identifier": sitemap_identifier,
+            "sitemap_url": sitemap_url,
             "documents": matching_docs,
             "count": len(matching_docs)
         }
@@ -301,14 +304,16 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/documents/by-sitemap/{sitemap_identifier}")
-async def delete_documents_by_sitemap(sitemap_identifier: str):
-    """Delete all documents for a specific sitemap"""
+@app.delete("/documents/by-sitemap/{sitemap_url:path}")
+async def delete_documents_by_sitemap(sitemap_url: str):
+    """Delete all documents for a specific sitemap URL"""
     try:
-        # Find all documents with this sitemap identifier
+        # Find all documents with this sitemap URL
         docs_to_delete = []
         for doc_id, metadata in metadata_store.items():
-            if metadata.get('sitemap_identifier') == sitemap_identifier:
+            # Check both sitemap_identifier (legacy) and sitemap_url
+            if (metadata.get('sitemap_url') == sitemap_url or 
+                metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
                 docs_to_delete.append(doc_id)
         
         if docs_to_delete:
@@ -321,8 +326,9 @@ async def delete_documents_by_sitemap(sitemap_identifier: str):
         
         return {
             "status": "success",
-            "message": f"Deleted {len(docs_to_delete)} documents for sitemap {sitemap_identifier}",
-            "deleted_count": len(docs_to_delete)
+            "message": f"Deleted {len(docs_to_delete)} documents for sitemap {sitemap_url}",
+            "deleted_count": len(docs_to_delete),
+            "sitemap_url": sitemap_url
         }
         
     except Exception as e:

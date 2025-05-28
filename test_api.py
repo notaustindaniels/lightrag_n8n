@@ -5,6 +5,7 @@ Test script for Enhanced LightRAG API
 import requests
 import json
 import time
+from urllib.parse import quote
 
 BASE_URL = "http://localhost:9621"
 
@@ -24,7 +25,7 @@ def test_enhanced_insert():
         "text": "This is a test document about Python programming. Python is a high-level programming language.",
         "description": "Test document for LightRAG",
         "source_url": "https://example.com/python-tutorial",
-        "sitemap_identifier": "[SITEMAP: https://example.com/sitemap.xml]",
+        "sitemap_url": "https://example.com/sitemap.xml",
         "doc_index": 1,
         "total_docs": 1
     }
@@ -65,10 +66,10 @@ def test_get_documents():
 def test_get_by_sitemap():
     """Test getting documents by sitemap"""
     print("Testing get documents by sitemap...")
-    sitemap_id = "[SITEMAP: https://example.com/sitemap.xml]"
+    sitemap_url = "https://example.com/sitemap.xml"
     
     response = requests.get(
-        f"{BASE_URL}/documents/by-sitemap/{requests.utils.quote(sitemap_id)}"
+        f"{BASE_URL}/documents/by-sitemap/{quote(sitemap_url, safe='')}"
     )
     
     print(f"Status: {response.status_code}")
@@ -101,10 +102,10 @@ def test_query():
 def test_delete_by_sitemap():
     """Test deleting documents by sitemap"""
     print("Testing delete by sitemap...")
-    sitemap_id = "[SITEMAP: https://example.com/sitemap.xml]"
+    sitemap_url = "https://example.com/sitemap.xml"
     
     response = requests.delete(
-        f"{BASE_URL}/documents/by-sitemap/{requests.utils.quote(sitemap_id)}"
+        f"{BASE_URL}/documents/by-sitemap/{quote(sitemap_url, safe='')}"
     )
     
     print(f"Status: {response.status_code}")

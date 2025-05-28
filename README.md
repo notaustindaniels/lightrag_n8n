@@ -11,16 +11,17 @@ The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field
 1. **Extended REST API** (`lightrag_extended_api.py`):
    - Fixes the file_path validation error by ensuring all documents have a file_path
    - Adds `/documents/text/enhanced` endpoint for rich metadata insertion
-   - Adds `/documents/by-sitemap/{sitemap_identifier}` for sitemap-specific queries
-   - Adds `/documents/by-sitemap/{sitemap_identifier}` DELETE endpoint for bulk deletion
+   - Adds `/documents/by-sitemap/{sitemap_url}` for sitemap-specific queries
+   - Adds `/documents/by-sitemap/{sitemap_url}` DELETE endpoint for bulk deletion (returns success even if no documents exist)
    - Maintains an in-memory metadata store that persists to disk
    - Fully compatible with existing LightRAG Python API
 
 2. **Enhanced n8n Workflow**:
-   - Automatically deletes old documents from a sitemap before re-indexing
+   - Automatically attempts to delete old documents from a sitemap before re-indexing (handles 404 gracefully)
    - Uses the enhanced endpoint to insert documents with full metadata
-   - Tracks source URLs, sitemap identifiers, and document indices
+   - Tracks source URLs and document indices
    - Provides better error handling and retry logic
+   - Simplified: uses sitemap URL directly without redundant identifiers
 
 ## How It Works
 
@@ -50,7 +51,7 @@ Insert text with full metadata support:
   "text": "Document content",
   "description": "Optional description",
   "source_url": "https://example.com/page",
-  "sitemap_identifier": "[SITEMAP: https://example.com/sitemap.xml]",
+  "sitemap_url": "https://example.com/sitemap.xml",
   "doc_index": 1,
   "total_docs": 50
 }
@@ -69,11 +70,11 @@ Standard text insertion (with file_path fix):
 #### GET `/documents`
 Returns all documents with proper file_path handling (no more validation errors!)
 
-#### GET `/documents/by-sitemap/{sitemap_identifier}`
-Get all documents for a specific sitemap
+#### GET `/documents/by-sitemap/{sitemap_url}`
+Get all documents for a specific sitemap URL (URL-encoded)
 
-#### DELETE `/documents/by-sitemap/{sitemap_identifier}`
-Delete all documents for a specific sitemap
+#### DELETE `/documents/by-sitemap/{sitemap_url}`
+Delete all documents for a specific sitemap URL (URL-encoded). Returns success even if no documents exist.
 
 #### DELETE `/documents/by-id`
 Delete specific documents by their IDs:
@@ -113,8 +114,8 @@ PORT=9621
 ## n8n Workflow Configuration
 
 The enhanced workflow:
-1. Sets the sitemap URL and identifier
-2. Deletes all existing documents for that sitemap
+1. Sets the sitemap URL
+2. Attempts to delete all existing documents for that sitemap (continues on 404 if none exist)
 3. Fetches and parses the sitemap
 4. Crawls each URL
 5. Inserts documents with full metadata using the enhanced endpoint
@@ -130,6 +131,8 @@ Update these nodes with your deployment URLs:
 3. **Bulk operations** - Delete all documents from a sitemap in one call
 4. **Backward compatible** - Works with existing LightRAG features
 5. **Persistent metadata** - Document metadata survives restarts
+6. **Simplified workflow** - No need for redundant sitemap identifiers
+7. **Graceful error handling** - Deletion works even if no documents exist
 
 ## Testing
 
@@ -145,7 +148,7 @@ Update these nodes with your deployment URLs:
      -d '{
        "text": "Test document content",
        "source_url": "https://example.com/test",
-       "sitemap_identifier": "[SITEMAP: test]"
+       "sitemap_url": "https://example.com/sitemap.xml"
      }'
    ```
 
@@ -153,3 +156,20 @@ Update these nodes with your deployment URLs:
    ```bash
    curl http://localhost:9621/documents
    ```
+
+## Migration from Previous Version
+
+If you have existing data with the old `sitemap_identifier` format, use the migration script:
+
+```bash
+# Run inside the container
+docker exec -it <container_name> python /app/migrate_metadata.py
+
+# Or with a custom path
+docker exec -it <container_name> python /app/migrate_metadata.py /path/to/document_metadata.json
+```
+
+This script will:
+- Convert `sitemap_identifier` to `sitemap_url`
+- Create a backup of your metadata
+- Update the content summaries to use the new format

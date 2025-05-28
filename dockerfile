@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir lightrag-hku[api] && \
     pip install --no-cache-dir fastapi uvicorn[standard] python-multipart aiofiles wcwidth pydantic
 
-# Copy the extended API
+# Copy the extended API and migration script
 COPY lightrag_extended_api.py /app/
+COPY migrate_metadata.py /app/
 
 # Create necessary directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs
