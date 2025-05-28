@@ -1,30 +1,28 @@
 #!/usr/bin/env python3
 """
-Extended LightRAG Server - Runs the original server with additional endpoints
-This preserves the web UI while adding enhanced document management
+Extended LightRAG Server - Properly integrates with the original server
 """
 import os
 import sys
-import asyncio
 import hashlib
 import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from pathlib import Path
+from pydantic import BaseModel, Field
+from fastapi import HTTPException
+import logging
 
-# First, set up environment variables that the LightRAG server expects
+# Set up environment variables before importing LightRAG
 os.environ.setdefault("WORKING_DIR", "/app/data/rag_storage")
 os.environ.setdefault("HOST", "0.0.0.0")
 os.environ.setdefault("PORT", "9621")
 
-# Import the original LightRAG server
+# Import the LightRAG server components
 try:
-    # Import the server module
-    import lightrag.api.lightrag_server as server_module
-    from fastapi import HTTPException
-    from pydantic import BaseModel, Field
+    from lightrag.api.lightrag_server import get_application, global_args
+    from lightrag.api.config import parse_args
     import uvicorn
-    
 except ImportError as e:
     print(f"Error importing LightRAG server: {e}")
     print("Make sure lightrag-hku[api] is installed")
@@ -73,12 +71,41 @@ def save_metadata():
         except Exception as e:
             print(f"Error saving metadata: {e}")
 
-def add_custom_endpoints(app, rag_instance):
+def add_custom_endpoints(app):
     """Add our custom endpoints to the existing app"""
     
-    @app.post("/documents/text/enhanced")
+    # Import here to avoid circular imports
+    from lightrag.api.utils_api import get_combined_auth_dependency
+    
+    # Get the RAG instance from the app
+    # The RAG instance is created during app initialization
+    # We'll need to access it through the routes
+    rag_instance = None
+    
+    # Get auth dependency
+    api_key = os.getenv("LIGHTRAG_API_KEY")
+    combined_auth = get_combined_auth_dependency(api_key)
+    
+    @app.post("/documents/text/enhanced", dependencies=[combined_auth])
     async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         """Enhanced text insertion with full metadata support"""
+        nonlocal rag_instance
+        
+        # Get RAG instance from document routes if not already set
+        if not rag_instance:
+            for route in app.routes:
+                if hasattr(route, 'endpoint') and hasattr(route.endpoint, '__closure__'):
+                    for cell in route.endpoint.__closure__:
+                        if hasattr(cell.cell_contents, '__class__'):
+                            if cell.cell_contents.__class__.__name__ == 'LightRAG':
+                                rag_instance = cell.cell_contents
+                                break
+                if rag_instance:
+                    break
+        
+        if not rag_instance:
+            raise HTTPException(status_code=500, detail="RAG instance not found")
+        
         try:
             # Prepare metadata header
             metadata_parts = []
@@ -131,7 +158,7 @@ def add_custom_endpoints(app, rag_instance):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    @app.get("/documents/by-sitemap/{sitemap_url:path}")
+    @app.get("/documents/by-sitemap/{sitemap_url:path}", dependencies=[combined_auth])
     async def get_documents_by_sitemap(sitemap_url: str):
         """Get all documents for a specific sitemap URL"""
         try:
@@ -157,9 +184,26 @@ def add_custom_endpoints(app, rag_instance):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    @app.delete("/documents/by-sitemap/{sitemap_url:path}")
+    @app.delete("/documents/by-sitemap/{sitemap_url:path}", dependencies=[combined_auth])
     async def delete_documents_by_sitemap(sitemap_url: str):
         """Delete all documents for a specific sitemap URL"""
+        nonlocal rag_instance
+        
+        # Get RAG instance if not already set
+        if not rag_instance:
+            for route in app.routes:
+                if hasattr(route, 'endpoint') and hasattr(route.endpoint, '__closure__'):
+                    for cell in route.endpoint.__closure__:
+                        if hasattr(cell.cell_contents, '__class__'):
+                            if cell.cell_contents.__class__.__name__ == 'LightRAG':
+                                rag_instance = cell.cell_contents
+                                break
+                if rag_instance:
+                    break
+        
+        if not rag_instance:
+            raise HTTPException(status_code=500, detail="RAG instance not found")
+        
         try:
             # Find all documents with this sitemap URL
             docs_to_delete = []
@@ -190,9 +234,26 @@ def add_custom_endpoints(app, rag_instance):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    @app.delete("/documents/by-id")
+    @app.delete("/documents/by-id", dependencies=[combined_auth])
     async def delete_documents_by_id(request: DeleteByIdRequest):
         """Delete documents by their IDs"""
+        nonlocal rag_instance
+        
+        # Get RAG instance if not already set
+        if not rag_instance:
+            for route in app.routes:
+                if hasattr(route, 'endpoint') and hasattr(route.endpoint, '__closure__'):
+                    for cell in route.endpoint.__closure__:
+                        if hasattr(cell.cell_contents, '__class__'):
+                            if cell.cell_contents.__class__.__name__ == 'LightRAG':
+                                rag_instance = cell.cell_contents
+                                break
+                if rag_instance:
+                    break
+        
+        if not rag_instance:
+            raise HTTPException(status_code=500, detail="RAG instance not found")
+        
         try:
             # Delete from LightRAG
             await rag_instance.adelete_by_doc_id(request.doc_ids)
@@ -216,40 +277,60 @@ def add_custom_endpoints(app, rag_instance):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    # Override the existing /documents endpoint to handle file_path properly
-    @app.api_route("/documents", methods=["GET"], include_in_schema=False)
-    async def get_documents_extended():
-        """Get all documents with proper file_path handling"""
+    # Override the /documents/text endpoint to ensure file_path is set
+    from lightrag.api.routers.document_routes import TextInsertRequest
+    
+    @app.post("/documents/text", dependencies=[combined_auth])
+    async def insert_text_with_filepath(request: TextInsertRequest):
+        """Standard text insertion with file_path support"""
+        nonlocal rag_instance
+        
+        # Get RAG instance if not already set
+        if not rag_instance:
+            for route in app.routes:
+                if hasattr(route, 'endpoint') and hasattr(route.endpoint, '__closure__'):
+                    for cell in route.endpoint.__closure__:
+                        if hasattr(cell.cell_contents, '__class__'):
+                            if cell.cell_contents.__class__.__name__ == 'LightRAG':
+                                rag_instance = cell.cell_contents
+                                break
+                if rag_instance:
+                    break
+        
+        if not rag_instance:
+            raise HTTPException(status_code=500, detail="RAG instance not found")
+        
         try:
-            # Get the original response
-            from lightrag.api.lightrag_server import get_all_docs_with_status
-            result = await get_all_docs_with_status()
+            # Compute document ID
+            doc_id = compute_doc_id(request.text)
             
-            # Ensure all documents have file_path
-            if "statuses" in result:
-                for status_type in ["processed", "pending", "failed"]:
-                    if status_type in result["statuses"]:
-                        for doc in result["statuses"][status_type]:
-                            if not doc.get("file_path"):
-                                # Try to get from metadata store
-                                doc_id = doc.get("id")
-                                if doc_id and doc_id in metadata_store:
-                                    doc["file_path"] = metadata_store[doc_id].get("file_path", f"text/{doc_id}.txt")
-                                else:
-                                    doc["file_path"] = f"text/{doc.get('id', 'unknown')}.txt"
+            # Use provided file_path or create one
+            file_path = getattr(request, 'file_path', None) or f"text/{doc_id}.txt"
             
-            return result
+            # Store metadata
+            metadata_store[doc_id] = {
+                "id": doc_id,
+                "file_path": file_path,
+                "description": getattr(request, 'description', None),
+                "indexed_at": datetime.utcnow().isoformat(),
+                "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
+            }
+            
+            # Save metadata
+            save_metadata()
+            
+            # Insert into LightRAG with file path
+            await rag_instance.ainsert(request.text, file_paths=[file_path])
+            
+            return {
+                "status": "success",
+                "message": "Document inserted successfully",
+                "doc_id": doc_id,
+                "file_path": file_path
+            }
             
         except Exception as e:
-            # If the original endpoint fails, provide a fallback
-            return {
-                "statuses": {
-                    "processed": [],
-                    "pending": [],
-                    "failed": []
-                },
-                "total": 0
-            }
+            raise HTTPException(status_code=500, detail=str(e))
     
     print("Custom endpoints added to LightRAG server")
 
@@ -257,13 +338,14 @@ if __name__ == "__main__":
     # Load metadata
     load_metadata()
     
-    # Get the app and rag instance from the server module
-    # The lightrag server creates these when imported
-    app = server_module.app
-    rag_instance = server_module.rag_instance
+    # Parse command line arguments
+    args = parse_args()
+    
+    # Create the app using the factory function
+    app = get_application(args)
     
     # Add our custom endpoints
-    add_custom_endpoints(app, rag_instance)
+    add_custom_endpoints(app)
     
     # Run the server
     host = os.getenv("HOST", "0.0.0.0")
@@ -273,7 +355,3 @@ if __name__ == "__main__":
     print("Web UI will be available at the root URL")
     
     uvicorn.run(app, host=host, port=port)
-
-
-    #This is a test
-    
