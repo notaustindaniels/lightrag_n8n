@@ -76,6 +76,7 @@ def add_custom_endpoints(app):
     
     # Import here to avoid circular imports
     from lightrag.api.utils_api import get_combined_auth_dependency
+    from fastapi import Depends
     
     # Get the RAG instance from the app
     # The RAG instance is created during app initialization
@@ -86,7 +87,7 @@ def add_custom_endpoints(app):
     api_key = os.getenv("LIGHTRAG_API_KEY")
     combined_auth = get_combined_auth_dependency(api_key)
     
-    @app.post("/documents/text/enhanced", dependencies=[combined_auth])
+    @app.post("/documents/text/enhanced", dependencies=[Depends(combined_auth)])
     async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         """Enhanced text insertion with full metadata support"""
         nonlocal rag_instance
@@ -158,7 +159,7 @@ def add_custom_endpoints(app):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    @app.get("/documents/by-sitemap/{sitemap_url:path}", dependencies=[combined_auth])
+    @app.get("/documents/by-sitemap/{sitemap_url:path}", dependencies=[Depends(combined_auth)])
     async def get_documents_by_sitemap(sitemap_url: str):
         """Get all documents for a specific sitemap URL"""
         try:
@@ -184,7 +185,7 @@ def add_custom_endpoints(app):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    @app.delete("/documents/by-sitemap/{sitemap_url:path}", dependencies=[combined_auth])
+    @app.delete("/documents/by-sitemap/{sitemap_url:path}", dependencies=[Depends(combined_auth)])
     async def delete_documents_by_sitemap(sitemap_url: str):
         """Delete all documents for a specific sitemap URL"""
         nonlocal rag_instance
@@ -234,7 +235,7 @@ def add_custom_endpoints(app):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
     
-    @app.delete("/documents/by-id", dependencies=[combined_auth])
+    @app.delete("/documents/by-id", dependencies=[Depends(combined_auth)])
     async def delete_documents_by_id(request: DeleteByIdRequest):
         """Delete documents by their IDs"""
         nonlocal rag_instance
@@ -280,7 +281,7 @@ def add_custom_endpoints(app):
     # Override the /documents/text endpoint to ensure file_path is set
     from lightrag.api.routers.document_routes import TextInsertRequest
     
-    @app.post("/documents/text", dependencies=[combined_auth])
+    @app.post("/documents/text", dependencies=[Depends(combined_auth)])
     async def insert_text_with_filepath(request: TextInsertRequest):
         """Standard text insertion with file_path support"""
         nonlocal rag_instance
