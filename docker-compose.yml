@@ -7,7 +7,7 @@ services:
       - "9621:9621"
     volumes:
       - ./data:/app/data
-      - ./config.ini:/app/config.ini
+      - ./lightrag_extended_api.py:/app/lightrag_extended_api.py
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
@@ -16,20 +16,4 @@ services:
       - WORKING_DIR=/app/data/rag_storage
       - HOST=0.0.0.0
       - PORT=9621
-    restart: unless-stopped
-
-  lightrag-delete:
-    image: python:3.11-slim
-    ports:
-      - "9622:9622"
-    volumes:
-      - ./data:/app/datac
-      - ./simple_delete_api.py:/app/simple_delete_api.py
-    environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - WORKING_DIR=/app/data/rag_storage
-    working_dir: /app
-    command: >
-      sh -c "pip install fastapi uvicorn lightrag-hku &&
-             python simple_delete_api.py"
     restart: unless-stopped

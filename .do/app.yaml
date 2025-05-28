@@ -11,7 +11,7 @@ services:
   name: lightrag
   routes:
   - path: /
-  run_command: python lightrag_api.py
+  run_command: python /app/lightrag_extended_api.py
   source_dir: /
   envs:
   - key: OPENAI_API_KEY

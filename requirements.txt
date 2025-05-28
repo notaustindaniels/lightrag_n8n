@@ -1,14 +1,7 @@
-# LightRAG core dependencies
-nano-vectordb>=0.0.4.3
-networkx>=2.8
-openai>=1.0.0
-httpx>=0.24.0
-plotly>=5.0.0
-scipy>=1.10.0
-numpy>=1.24.0
-python-dateutil>=2.8.0
+# LightRAG with API support
+lightrag-hku[api]>=0.0.8
 
-# FastAPI server dependencies
+# FastAPI and server dependencies
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
 python-multipart>=0.0.5
@@ -16,3 +9,16 @@ aiofiles>=23.0.0
 
 # Additional required dependencies
 pydantic>=2.0.0
+httpx>=0.24.0
+wcwidth>=0.2.5
+
+# OpenAI for LLM and embeddings
+openai>=1.0.0
+
+# Core dependencies
+nano-vectordb>=0.0.4.3
+networkx>=2.8
+plotly>=5.0.0
+scipy>=1.10.0
+numpy>=1.24.0
+python-dateutil>=2.8.0
