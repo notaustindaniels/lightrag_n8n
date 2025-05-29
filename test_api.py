@@ -17,14 +17,6 @@ def test_health():
     print(f"Response: {response.json()}")
     print()
 
-def test_webui():
-    """Test web UI availability"""
-    print("Testing web UI endpoint...")
-    response = requests.get(f"{BASE_URL}/webui")
-    print(f"Status: {response.status_code}")
-    print(f"Web UI available: {'Yes' if response.status_code == 200 else 'No'}")
-    print()
-
 def test_enhanced_insert():
     """Test enhanced document insertion"""
     print("Testing enhanced document insertion...")
@@ -120,12 +112,40 @@ def test_delete_by_sitemap():
     print(f"Response: {json.dumps(response.json(), indent=2)}")
     print()
 
+def test_webui():
+    """Test WebUI availability"""
+    print("Testing WebUI endpoint...")
+    
+    # Test root redirect
+    print("  Testing root redirect...")
+    response = requests.get(f"{BASE_URL}/", allow_redirects=False)
+    if response.status_code == 307:
+        print(f"  Root redirects to: {response.headers.get('location')}")
+    
+    # Test webui endpoint
+    print("  Testing /webui endpoint...")
+    response = requests.get(f"{BASE_URL}/webui")
+    print(f"  Status: {response.status_code}")
+    if response.status_code == 200:
+        print("  WebUI is available!")
+        print(f"  Content length: {len(response.content)} bytes")
+        # Check if it's the full UI or fallback
+        if b"LightRAG Extended API" in response.content:
+            print("  Using fallback WebUI")
+        else:
+            print("  Full LightRAG WebUI detected")
+    else:
+        print("  WebUI not available")
+    print()
+
 if __name__ == "__main__":
     print("Enhanced LightRAG API Test Suite")
     print("=" * 50)
     
     # Run tests
     test_health()
+    
+    # Test WebUI
     test_webui()
     
     # Insert a document
@@ -147,4 +167,3 @@ if __name__ == "__main__":
     test_delete_by_sitemap()
     
     print("\nTest suite completed!")
-    print(f"Web UI available at: {BASE_URL}/webui")
