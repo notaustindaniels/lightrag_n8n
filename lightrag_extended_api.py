@@ -5,10 +5,13 @@ Extended LightRAG API Server that adds missing functionality for document manage
 import os
 import asyncio
 import hashlib
+import pkg_resources
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 import uvicorn
 from contextlib import asynccontextmanager
@@ -127,6 +130,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount webui static files
+try:
+    # Try to find the webui in the installed lightrag package
+    # Get the package location
+    package_path = pkg_resources.get_distribution('lightrag-hku').location
+    webui_path = os.path.join(package_path, 'lightrag', 'api', 'webui')
+    
+    # Check if webui exists in the package
+    if os.path.exists(webui_path):
+        app.mount("/webui", StaticFiles(directory=webui_path, html=True), name="webui")
+        print(f"WebUI mounted from: {webui_path}")
+    else:
+        # Try alternative location (if running from source)
+        alt_webui_path = os.path.join(os.path.dirname(__file__), 'webui')
+        if os.path.exists(alt_webui_path):
+            app.mount("/webui", StaticFiles(directory=alt_webui_path, html=True), name="webui")
+            print(f"WebUI mounted from: {alt_webui_path}")
+        else:
+            print("Warning: WebUI static files not found")
+except Exception as e:
+    print(f"Warning: Could not mount WebUI: {e}")
+
+@app.get("/")
+async def root():
+    """Redirect to webui"""
+    return RedirectResponse(url="/webui")
 
 @app.get("/health")
 async def health_check():

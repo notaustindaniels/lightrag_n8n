@@ -2,6 +2,14 @@
 
 This repository extends the LightRAG REST API to solve the file_path validation error and add enhanced document management capabilities.
 
+## Quick Start
+
+1. Clone or download this repository
+2. Copy `.env.example` to `.env` and add your OpenAI API key
+3. Run `docker-compose up -d --build`
+4. Access the WebUI at http://localhost:9621/webui
+5. Import the n8n workflow and update the endpoint URLs
+
 ## Problem Solved
 
 The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field when inserting documents, which causes a Pydantic validation error when retrieving documents via the `/documents` endpoint. This enhanced version fixes this issue and adds additional functionality.
@@ -15,6 +23,7 @@ The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field
    - Adds `/documents/by-sitemap/{sitemap_url}` DELETE endpoint for bulk deletion (returns success even if no documents exist)
    - Maintains an in-memory metadata store that persists to disk
    - Fully compatible with existing LightRAG Python API
+   - **Includes WebUI support** at `/webui` (when available)
 
 2. **Enhanced n8n Workflow**:
    - Automatically attempts to delete old documents from a sitemap before re-indexing (handles 404 gracefully)
@@ -156,6 +165,30 @@ Update these nodes with your deployment URLs:
    ```bash
    curl http://localhost:9621/documents
    ```
+
+## WebUI Access
+
+The extended API includes support for the LightRAG WebUI:
+
+1. **Primary WebUI**: The full LightRAG webui is included with the `lightrag-hku[api]` package and will be automatically served at:
+   - `http://localhost:9621/webui`
+   - The root URL (`/`) redirects to `/webui`
+
+2. **Fallback WebUI**: If the full webui is not found in the package, the fallback page (`webui/index.html`) provides:
+   - Available API endpoints
+   - Links to health check and API documentation
+   - Quick reference for all endpoints
+
+3. **API Documentation**: Interactive API docs are always available at:
+   - `http://localhost:9621/docs` - Swagger UI
+   - `http://localhost:9621/redoc` - ReDoc
+
+### WebUI Availability
+
+The WebUI should work automatically. If you see the fallback page instead of the full UI:
+1. This means the webui files weren't included in the lightrag-hku package
+2. The API is still fully functional - you can use the API docs at `/docs`
+3. The fallback page provides quick access to all endpoints
 
 ## Migration from Previous Version
 
