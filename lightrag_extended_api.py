@@ -104,6 +104,12 @@ async def lifespan(app: FastAPI):
     await rag_instance.initialize_storages()
     await initialize_pipeline_status()
     
+    # Ensure doc_status storage is available
+    if not hasattr(rag_instance, 'doc_status') or not rag_instance.doc_status:
+        print("Warning: doc_status storage not initialized properly")
+    else:
+        print("doc_status storage initialized successfully")
+    
     yield
     
     # Shutdown - save metadata
@@ -205,11 +211,27 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         # Insert into LightRAG with file path
         await rag_instance.ainsert(enriched_content, file_paths=[file_path])
         
+        # Update the doc_status if available
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+            try:
+                await rag_instance.doc_status.upsert({
+                    doc_id: {
+                        "id": doc_id,
+                        "file_path": file_path,
+                        "status": "processed",
+                        "created_at": datetime.utcnow().isoformat(),
+                        "updated_at": datetime.utcnow().isoformat()
+                    }
+                })
+            except:
+                pass
+        
         return {
             "status": "success",
             "message": "Document inserted successfully",
             "doc_id": doc_id,
-            "file_path": file_path
+            "file_path": file_path,
+            "id": doc_id  # Include id for WebUI compatibility
         }
         
     except Exception as e:
@@ -237,11 +259,27 @@ async def insert_text(request: TextInsertRequest):
         # Insert into LightRAG with file path
         await rag_instance.ainsert(request.text, file_paths=[file_path])
         
+        # Update the doc_status if available
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+            try:
+                await rag_instance.doc_status.upsert({
+                    doc_id: {
+                        "id": doc_id,
+                        "file_path": file_path,
+                        "status": "processed",
+                        "created_at": datetime.utcnow().isoformat(),
+                        "updated_at": datetime.utcnow().isoformat()
+                    }
+                })
+            except:
+                pass
+        
         return {
             "status": "success",
             "message": "Document inserted successfully",
             "doc_id": doc_id,
-            "file_path": file_path
+            "file_path": file_path,
+            "id": doc_id  # Include id for WebUI compatibility
         }
         
     except Exception as e:
@@ -251,39 +289,56 @@ async def insert_text(request: TextInsertRequest):
 async def get_documents():
     """Get all documents with proper file_path handling"""
     try:
-        # Get documents from LightRAG's document status storage
-        doc_status = rag_instance.doc_status
-        
+        # Try to get documents from LightRAG's storage
         documents = []
-        if hasattr(doc_status, 'get_all_docs'):
-            raw_docs = await doc_status.get_all_docs()
-            
-            for doc in raw_docs:
-                doc_id = doc.get('id', '')
-                # Get metadata from our store
-                metadata = metadata_store.get(doc_id, {})
-                
-                # Ensure file_path exists
-                file_path = metadata.get('file_path', doc.get('file_path', f"text/{doc_id}.txt"))
-                
-                documents.append({
-                    "id": doc_id,
-                    "file_path": file_path,
-                    "metadata": metadata,
-                    "status": doc.get('status', 'processed')
-                })
         
-        return {
-            "statuses": {
-                "processed": documents,
-                "pending": [],
-                "failed": []
-            },
-            "total": len(documents)
-        }
+        # First, try to get from doc_status if available
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+            try:
+                # Get all documents from the doc status storage
+                all_doc_ids = await rag_instance.doc_status.all_keys()
+                
+                for doc_id in all_doc_ids:
+                    doc_status = await rag_instance.doc_status.get(doc_id)
+                    if doc_status:
+                        # Get metadata from our store
+                        metadata = metadata_store.get(doc_id, {})
+                        
+                        # Create a document entry that matches the expected format
+                        doc_entry = {
+                            "id": doc_id,
+                            "file_path": metadata.get('file_path', doc_status.get('file_path', f"text/{doc_id}.txt")),
+                            "status": doc_status.get('status', 'processed'),
+                            "created_at": metadata.get('indexed_at', doc_status.get('created_at', '')),
+                            "updated_at": metadata.get('indexed_at', doc_status.get('updated_at', '')),
+                            "description": metadata.get('description', ''),
+                            "metadata": metadata
+                        }
+                        documents.append(doc_entry)
+            except Exception as e:
+                print(f"Error accessing doc_status: {e}")
+        
+        # If no documents from doc_status, use our metadata store
+        if not documents:
+            for doc_id, metadata in metadata_store.items():
+                doc_entry = {
+                    "id": doc_id,
+                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
+                    "status": "processed",
+                    "created_at": metadata.get('indexed_at', ''),
+                    "updated_at": metadata.get('indexed_at', ''),
+                    "description": metadata.get('description', ''),
+                    "metadata": metadata
+                }
+                documents.append(doc_entry)
+        
+        # Return in the format expected by the WebUI
+        return documents
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in get_documents: {e}")
+        # Return empty list instead of error to prevent WebUI from breaking
+        return []
 
 @app.get("/documents/by-sitemap/{sitemap_url:path}")
 async def get_documents_by_sitemap(sitemap_url: str):
@@ -384,13 +439,96 @@ async def query(request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "9621"))
-    host = os.getenv("HOST", "0.0.0.0")
-    
-    uvicorn.run(
-        "lightrag_extended_api:app",
-        host=host,
-        port=port,
-        reload=False
-    )
+# Additional endpoints for WebUI compatibility
+@app.get("/storage/kv")
+async def get_kv_storage():
+    """Get key-value storage statistics"""
+    try:
+        kv_storage = rag_instance.kv_storage
+        if hasattr(kv_storage, 'all_keys'):
+            keys = await kv_storage.all_keys()
+            return {
+                "total_keys": len(keys),
+                "storage_type": type(kv_storage).__name__
+            }
+        return {"total_keys": 0, "storage_type": "unknown"}
+    except:
+        return {"total_keys": 0, "storage_type": "unknown"}
+
+@app.get("/storage/graph")
+async def get_graph_storage():
+    """Get graph storage statistics"""
+    try:
+        graph_storage = rag_instance.graph_storage
+        nodes = await graph_storage.get_all_nodes()
+        edges = await graph_storage.get_all_edges()
+        return {
+            "total_nodes": len(nodes) if nodes else 0,
+            "total_edges": len(edges) if edges else 0,
+            "storage_type": type(graph_storage).__name__
+        }
+    except:
+        return {"total_nodes": 0, "total_edges": 0, "storage_type": "unknown"}
+
+@app.get("/storage/vector")
+async def get_vector_storage():
+    """Get vector storage statistics"""
+    try:
+        vector_storage = rag_instance.vector_storage
+        if hasattr(vector_storage, 'size'):
+            size = await vector_storage.size()
+            return {
+                "total_vectors": size,
+                "storage_type": type(vector_storage).__name__
+            }
+        return {"total_vectors": 0, "storage_type": "unknown"}
+    except:
+        return {"total_vectors": 0, "storage_type": "unknown"}
+
+@app.get("/config")
+async def get_config():
+    """Get configuration for WebUI"""
+    return {
+        "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        "embedding_model": os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002"),
+        "working_dir": os.getenv("WORKING_DIR", "/app/data/rag_storage"),
+        "max_parallel_insert": 2,
+        "enable_llm_cache": True,
+        "features": {
+            "query": True,
+            "insert": True,
+            "delete": True,
+            "export": False,
+            "visualize": False
+        }
+    }
+
+@app.get("/stats")
+async def get_stats():
+    """Get system statistics for WebUI dashboard"""
+    try:
+        doc_count = len(metadata_store)
+        
+        # Try to get more accurate counts from storages
+        try:
+            if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+                all_keys = await rag_instance.doc_status.all_keys()
+                doc_count = max(doc_count, len(all_keys))
+        except:
+            pass
+        
+        return {
+            "total_documents": doc_count,
+            "total_chunks": 0,  # Would need to query chunk storage
+            "total_entities": 0,  # Would need to query entity storage
+            "total_relations": 0,  # Would need to query relation storage
+            "last_updated": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {
+            "total_documents": 0,
+            "total_chunks": 0,
+            "total_entities": 0,
+            "total_relations": 0,
+            "error": str(e)
+        }
