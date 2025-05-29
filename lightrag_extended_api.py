@@ -8,13 +8,14 @@ import hashlib
 import pkg_resources
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 import uvicorn
 from contextlib import asynccontextmanager
+from typing import List, Dict, Optional, Any
 
 # Import LightRAG components
 from lightrag import LightRAG, QueryParam
@@ -73,7 +74,7 @@ def compute_doc_id(content: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app"""
-    global rag_instance
+    global rag_instance, metadata_store
     
     # Startup
     working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
@@ -85,30 +86,32 @@ async def lifespan(app: FastAPI):
         import json
         try:
             with open(metadata_file, 'r') as f:
-                global metadata_store
                 metadata_store = json.load(f)
-        except:
+                print(f"Loaded {len(metadata_store)} documents from metadata store")
+        except Exception as e:
+            print(f"Error loading metadata: {e}")
             metadata_store = {}
+    else:
+        print("No existing metadata found, starting fresh")
     
     # Initialize LightRAG
-    rag_instance = LightRAG(
-        working_dir=working_dir,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=1536,
-            max_token_size=8192,
-            func=openai_embed
-        ),
-        llm_model_func=gpt_4o_mini_complete,
-    )
-    
-    await rag_instance.initialize_storages()
-    await initialize_pipeline_status()
-    
-    # Ensure doc_status storage is available
-    if not hasattr(rag_instance, 'doc_status') or not rag_instance.doc_status:
-        print("Warning: doc_status storage not initialized properly")
-    else:
-        print("doc_status storage initialized successfully")
+    try:
+        rag_instance = LightRAG(
+            working_dir=working_dir,
+            embedding_func=EmbeddingFunc(
+                embedding_dim=1536,
+                max_token_size=8192,
+                func=openai_embed
+            ),
+            llm_model_func=gpt_4o_mini_complete,
+        )
+        
+        await rag_instance.initialize_storages()
+        await initialize_pipeline_status()
+        print("LightRAG initialized successfully")
+    except Exception as e:
+        print(f"Error initializing LightRAG: {e}")
+        raise
     
     yield
     
@@ -117,8 +120,9 @@ async def lifespan(app: FastAPI):
         import json
         with open(metadata_file, 'w') as f:
             json.dump(metadata_store, f, indent=2)
-    except:
-        pass
+            print(f"Saved {len(metadata_store)} documents to metadata store")
+    except Exception as e:
+        print(f"Error saving metadata: {e}")
 
 # Create FastAPI app
 app = FastAPI(
@@ -136,6 +140,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all incoming requests for debugging"""
+    print(f"Request: {request.method} {request.url.path}")
+    response = await call_next(request)
+    print(f"Response: {response.status_code}")
+    return response
 
 # Mount webui static files
 try:
@@ -164,10 +177,55 @@ async def root():
     """Redirect to webui"""
     return RedirectResponse(url="/webui")
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "service": "extended-lightrag"}
+@app.get("/status")
+async def get_status():
+    """Get overall system status"""
+    try:
+        doc_count = len(metadata_store)
+        
+        return {
+            "status": "running",
+            "documents": {
+                "total": doc_count,
+                "processed": doc_count,
+                "pending": 0,
+                "failed": 0
+            },
+            "storage": {
+                "working_dir": os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/debug/storage")
+async def debug_storage():
+    """Debug endpoint to check storage status"""
+    try:
+        # Check what's in our metadata store
+        metadata_count = len(metadata_store)
+        
+        # Try to get documents from LightRAG's internal storage
+        lightrag_docs = []
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+            try:
+                if hasattr(rag_instance.doc_status, 'get_all_docs'):
+                    lightrag_docs = await rag_instance.doc_status.get_all_docs()
+                elif hasattr(rag_instance.doc_status, 'all'):
+                    lightrag_docs = await rag_instance.doc_status.all()
+            except Exception as e:
+                lightrag_docs = f"Error accessing LightRAG storage: {str(e)}"
+        
+        return {
+            "metadata_store_count": metadata_count,
+            "metadata_store_ids": list(metadata_store.keys())[:10],  # First 10 IDs
+            "lightrag_storage": lightrag_docs if isinstance(lightrag_docs, str) else len(lightrag_docs),
+            "rag_instance_type": type(rag_instance).__name__,
+            "doc_status_type": type(rag_instance.doc_status).__name__ if hasattr(rag_instance, 'doc_status') else "None"
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
@@ -208,33 +266,20 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             "content_summary": enriched_content[:200] + "..." if len(enriched_content) > 200 else enriched_content
         }
         
-        # Insert into LightRAG with file path
-        await rag_instance.ainsert(enriched_content, file_paths=[file_path])
+        # Insert into LightRAG with file path and ID
+        await rag_instance.ainsert(enriched_content, file_paths=[file_path], ids=[doc_id])
         
-        # Update the doc_status if available
-        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
-            try:
-                await rag_instance.doc_status.upsert({
-                    doc_id: {
-                        "id": doc_id,
-                        "file_path": file_path,
-                        "status": "processed",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    }
-                })
-            except:
-                pass
+        print(f"Document inserted: {doc_id} with file_path: {file_path}")
         
         return {
             "status": "success",
             "message": "Document inserted successfully",
             "doc_id": doc_id,
-            "file_path": file_path,
-            "id": doc_id  # Include id for WebUI compatibility
+            "file_path": file_path
         }
         
     except Exception as e:
+        print(f"Error inserting document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documents/text")
@@ -256,89 +301,106 @@ async def insert_text(request: TextInsertRequest):
             "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
         }
         
-        # Insert into LightRAG with file path
-        await rag_instance.ainsert(request.text, file_paths=[file_path])
+        # Insert into LightRAG with file path and ID
+        await rag_instance.ainsert(request.text, file_paths=[file_path], ids=[doc_id])
         
-        # Update the doc_status if available
-        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
-            try:
-                await rag_instance.doc_status.upsert({
-                    doc_id: {
-                        "id": doc_id,
-                        "file_path": file_path,
-                        "status": "processed",
-                        "created_at": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    }
-                })
-            except:
-                pass
+        print(f"Document inserted: {doc_id} with file_path: {file_path}")
         
         return {
             "status": "success",
             "message": "Document inserted successfully",
             "doc_id": doc_id,
-            "file_path": file_path,
-            "id": doc_id  # Include id for WebUI compatibility
+            "file_path": file_path
         }
         
     except Exception as e:
+        print(f"Error inserting document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents")
 async def get_documents():
     """Get all documents with proper file_path handling"""
     try:
-        # Try to get documents from LightRAG's storage
+        # Initialize response structure
         documents = []
         
-        # First, try to get from doc_status if available
+        # First, get all documents from our metadata store
+        for doc_id, metadata in metadata_store.items():
+            doc_info = {
+                "id": doc_id,
+                "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
+                "description": metadata.get('description', ''),
+                "source_url": metadata.get('source_url', ''),
+                "indexed_at": metadata.get('indexed_at', ''),
+                "status": "processed",
+                "content_summary": metadata.get('content_summary', '')
+            }
+            documents.append(doc_info)
+        
+        # Try to also get documents from LightRAG's internal storage
+        # This ensures compatibility with the webui
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
             try:
-                # Get all documents from the doc status storage
-                all_doc_ids = await rag_instance.doc_status.all_keys()
+                lightrag_docs = []
+                if hasattr(rag_instance.doc_status, 'get_all_docs'):
+                    lightrag_docs = await rag_instance.doc_status.get_all_docs()
+                elif hasattr(rag_instance.doc_status, 'all'):
+                    lightrag_docs = await rag_instance.doc_status.all()
                 
-                for doc_id in all_doc_ids:
-                    doc_status = await rag_instance.doc_status.get(doc_id)
-                    if doc_status:
-                        # Get metadata from our store
-                        metadata = metadata_store.get(doc_id, {})
-                        
-                        # Create a document entry that matches the expected format
-                        doc_entry = {
+                # Merge LightRAG docs with our metadata
+                for doc in lightrag_docs:
+                    doc_id = doc.get('id', '')
+                    if doc_id and doc_id not in metadata_store:
+                        # This is a document in LightRAG but not in our store
+                        documents.append({
                             "id": doc_id,
-                            "file_path": metadata.get('file_path', doc_status.get('file_path', f"text/{doc_id}.txt")),
-                            "status": doc_status.get('status', 'processed'),
-                            "created_at": metadata.get('indexed_at', doc_status.get('created_at', '')),
-                            "updated_at": metadata.get('indexed_at', doc_status.get('updated_at', '')),
-                            "description": metadata.get('description', ''),
-                            "metadata": metadata
-                        }
-                        documents.append(doc_entry)
+                            "file_path": doc.get('file_path', f"text/{doc_id}.txt"),
+                            "description": doc.get('description', ''),
+                            "status": doc.get('status', 'processed'),
+                            "content_summary": doc.get('content_summary', '')
+                        })
             except Exception as e:
-                print(f"Error accessing doc_status: {e}")
+                print(f"Warning: Could not fetch from LightRAG storage: {e}")
         
-        # If no documents from doc_status, use our metadata store
-        if not documents:
-            for doc_id, metadata in metadata_store.items():
-                doc_entry = {
-                    "id": doc_id,
-                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
-                    "status": "processed",
-                    "created_at": metadata.get('indexed_at', ''),
-                    "updated_at": metadata.get('indexed_at', ''),
-                    "description": metadata.get('description', ''),
-                    "metadata": metadata
-                }
-                documents.append(doc_entry)
+        # Return in the format the webui expects
+        response = {
+            "total": len(documents),
+            "documents": documents,
+            "statuses": {
+                "processed": [d for d in documents if d.get('status') == 'processed'],
+                "pending": [d for d in documents if d.get('status') == 'pending'],
+                "failed": [d for d in documents if d.get('status') == 'failed']
+            }
+        }
         
-        # Return in the format expected by the WebUI
-        return documents
+        print(f"Returning {len(documents)} documents")
+        return response
         
     except Exception as e:
-        print(f"Error in get_documents: {e}")
-        # Return empty list instead of error to prevent WebUI from breaking
-        return []
+        print(f"Error getting documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/status")
+async def get_documents_status():
+    """Get document processing status - compatibility endpoint for webui"""
+    try:
+        # Count documents by status
+        processed_count = len(metadata_store)
+        
+        return {
+            "total": processed_count,
+            "processed": processed_count,
+            "pending": 0,
+            "failed": 0,
+            "statuses": {
+                "processed": list(metadata_store.keys()),
+                "pending": [],
+                "failed": []
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents/by-sitemap/{sitemap_url:path}")
 async def get_documents_by_sitemap(sitemap_url: str):
@@ -371,7 +433,12 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
     """Delete documents by their IDs"""
     try:
         # Delete from LightRAG
-        await rag_instance.adelete_by_doc_id(request.doc_ids)
+        if hasattr(rag_instance, 'adelete_by_doc_id'):
+            await rag_instance.adelete_by_doc_id(request.doc_ids)
+        elif hasattr(rag_instance, 'delete_by_doc_id'):
+            rag_instance.delete_by_doc_id(request.doc_ids)
+        else:
+            print("Warning: LightRAG instance doesn't have delete_by_doc_id method")
         
         # Remove from metadata store
         deleted_count = 0
@@ -380,6 +447,8 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
                 del metadata_store[doc_id]
                 deleted_count += 1
         
+        print(f"Deleted {deleted_count} documents from metadata store")
+        
         return {
             "status": "success",
             "message": f"Successfully deleted {deleted_count} documents",
@@ -387,6 +456,7 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
         }
         
     except Exception as e:
+        print(f"Error deleting documents: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/documents/by-sitemap/{sitemap_url:path}")
@@ -439,96 +509,90 @@ async def query(request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Additional endpoints for WebUI compatibility
-@app.get("/storage/kv")
-async def get_kv_storage():
-    """Get key-value storage statistics"""
+@app.post("/documents/file")
+async def upload_file(
+    file: UploadFile = File(...),
+    description: Optional[str] = Form(None)
+):
+    """Upload a single document file"""
     try:
-        kv_storage = rag_instance.kv_storage
-        if hasattr(kv_storage, 'all_keys'):
-            keys = await kv_storage.all_keys()
-            return {
-                "total_keys": len(keys),
-                "storage_type": type(kv_storage).__name__
-            }
-        return {"total_keys": 0, "storage_type": "unknown"}
-    except:
-        return {"total_keys": 0, "storage_type": "unknown"}
-
-@app.get("/storage/graph")
-async def get_graph_storage():
-    """Get graph storage statistics"""
-    try:
-        graph_storage = rag_instance.graph_storage
-        nodes = await graph_storage.get_all_nodes()
-        edges = await graph_storage.get_all_edges()
-        return {
-            "total_nodes": len(nodes) if nodes else 0,
-            "total_edges": len(edges) if edges else 0,
-            "storage_type": type(graph_storage).__name__
-        }
-    except:
-        return {"total_nodes": 0, "total_edges": 0, "storage_type": "unknown"}
-
-@app.get("/storage/vector")
-async def get_vector_storage():
-    """Get vector storage statistics"""
-    try:
-        vector_storage = rag_instance.vector_storage
-        if hasattr(vector_storage, 'size'):
-            size = await vector_storage.size()
-            return {
-                "total_vectors": size,
-                "storage_type": type(vector_storage).__name__
-            }
-        return {"total_vectors": 0, "storage_type": "unknown"}
-    except:
-        return {"total_vectors": 0, "storage_type": "unknown"}
-
-@app.get("/config")
-async def get_config():
-    """Get configuration for WebUI"""
-    return {
-        "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002"),
-        "working_dir": os.getenv("WORKING_DIR", "/app/data/rag_storage"),
-        "max_parallel_insert": 2,
-        "enable_llm_cache": True,
-        "features": {
-            "query": True,
-            "insert": True,
-            "delete": True,
-            "export": False,
-            "visualize": False
-        }
-    }
-
-@app.get("/stats")
-async def get_stats():
-    """Get system statistics for WebUI dashboard"""
-    try:
-        doc_count = len(metadata_store)
+        # Read file content
+        content = await file.read()
+        text_content = content.decode('utf-8')
         
-        # Try to get more accurate counts from storages
-        try:
-            if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
-                all_keys = await rag_instance.doc_status.all_keys()
-                doc_count = max(doc_count, len(all_keys))
-        except:
-            pass
+        # Compute document ID
+        doc_id = compute_doc_id(text_content)
+        
+        # Use filename as file_path
+        file_path = file.filename
+        
+        # Store metadata
+        metadata_store[doc_id] = {
+            "id": doc_id,
+            "file_path": file_path,
+            "description": description,
+            "indexed_at": datetime.utcnow().isoformat(),
+            "content_summary": text_content[:200] + "..." if len(text_content) > 200 else text_content
+        }
+        
+        # Insert into LightRAG
+        await rag_instance.ainsert(text_content, file_paths=[file_path], ids=[doc_id])
+        
+        print(f"File uploaded: {file_path} as document {doc_id}")
         
         return {
-            "total_documents": doc_count,
-            "total_chunks": 0,  # Would need to query chunk storage
-            "total_entities": 0,  # Would need to query entity storage
-            "total_relations": 0,  # Would need to query relation storage
-            "last_updated": datetime.utcnow().isoformat()
+            "status": "success",
+            "message": "File uploaded successfully",
+            "doc_id": doc_id,
+            "file_path": file_path
         }
+        
     except Exception as e:
+        print(f"Error uploading file: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/batch")
+async def upload_batch(files: List[UploadFile] = File(...)):
+    """Upload multiple document files"""
+    try:
+        results = []
+        
+        for file in files:
+            # Read file content
+            content = await file.read()
+            text_content = content.decode('utf-8')
+            
+            # Compute document ID
+            doc_id = compute_doc_id(text_content)
+            
+            # Use filename as file_path
+            file_path = file.filename
+            
+            # Store metadata
+            metadata_store[doc_id] = {
+                "id": doc_id,
+                "file_path": file_path,
+                "indexed_at": datetime.utcnow().isoformat(),
+                "content_summary": text_content[:200] + "..." if len(text_content) > 200 else text_content
+            }
+            
+            # Insert into LightRAG
+            await rag_instance.ainsert(text_content, file_paths=[file_path], ids=[doc_id])
+            
+            results.append({
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "status": "success"
+            })
+        
+        print(f"Batch upload: {len(files)} files processed")
+        
         return {
-            "total_documents": 0,
-            "total_chunks": 0,
-            "total_entities": 0,
-            "total_relations": 0,
-            "error": str(e)
+            "status": "success",
+            "message": f"Successfully uploaded {len(files)} files",
+            "results": results
         }
+        
+    except Exception as e:
+        print(f"Error in batch upload: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

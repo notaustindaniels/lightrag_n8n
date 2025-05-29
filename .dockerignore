@@ -1,0 +1,49 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Data directory
+data/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+README.md
+*.md
+
+# Environment files (security)
+.env
+.env.*
+
+# n8n workflow
+*.json
+
+# Test files
+test_*.py
+
+# Keep the essential files
+!lightrag_extended_api.py
+!migrate_metadata.py
+!webui/
+!requirements.txt

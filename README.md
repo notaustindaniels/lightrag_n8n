@@ -183,12 +183,32 @@ The extended API includes support for the LightRAG WebUI:
    - `http://localhost:9621/docs` - Swagger UI
    - `http://localhost:9621/redoc` - ReDoc
 
-### WebUI Availability
+### WebUI Troubleshooting
 
-The WebUI should work automatically. If you see the fallback page instead of the full UI:
-1. This means the webui files weren't included in the lightrag-hku package
-2. The API is still fully functional - you can use the API docs at `/docs`
-3. The fallback page provides quick access to all endpoints
+If documents aren't showing in the WebUI:
+
+1. **Check the debug endpoint**: Visit `http://localhost:9621/debug/storage` to see:
+   - How many documents are in the metadata store
+   - Whether LightRAG's internal storage is accessible
+   - Storage types being used
+
+2. **Monitor requests**: The server logs all incoming requests. Watch the console to see what endpoints the webui is calling.
+
+3. **Test with the API**: Use the test script to verify documents are being inserted:
+   ```bash
+   python test_api.py
+   ```
+
+4. **Check document format**: The webui expects documents with these fields:
+   - `id`: Document ID
+   - `file_path`: Path to the document
+   - `status`: Processing status (processed/pending/failed)
+   - `description`: Optional description
+   - `content_summary`: Brief content preview
+
+5. **File uploads**: The webui can upload files via:
+   - `/documents/file` - Single file upload
+   - `/documents/batch` - Multiple file upload
 
 ## Migration from Previous Version
 
