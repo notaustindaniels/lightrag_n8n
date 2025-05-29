@@ -32,13 +32,17 @@ RUN if [ -d "/tmp/build/webui" ]; then cp -r /tmp/build/webui/* /app/webui/; fi 
     rm -rf /tmp/build
 
 # Check if webui exists in the installed package and log the result
-RUN python -c "import pkg_resources; import os; \
-    pkg_path = pkg_resources.get_distribution('lightrag-hku').location; \
-    webui_path = os.path.join(pkg_path, 'lightrag', 'api', 'webui'); \
-    print(f'Package WebUI path: {webui_path}'); \
-    print(f'Package WebUI exists: {os.path.exists(webui_path)}'); \
-    local_webui = '/app/webui/index.html'; \
-    print(f'Local WebUI exists: {os.path.exists(local_webui)}')"
+RUN python -c "import site; import glob; import os; \
+    found = False; \
+    for site_dir in site.getsitepackages(): \
+        pattern = os.path.join(site_dir, 'lightrag*/lightrag/api/webui'); \
+        matches = glob.glob(pattern); \
+        if matches and os.path.exists(matches[0]): \
+            print(f'Package WebUI found at: {matches[0]}'); \
+            found = True; \
+            break; \
+    if not found: print('Package WebUI not found'); \
+    print(f'Local WebUI fallback will be at: /app/webui')"
 
 # Create necessary directories
 RUN mkdir -p /app/data/rag_storage /app/data/inputs

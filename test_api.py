@@ -52,15 +52,32 @@ def test_get_documents():
         data = response.json()
         print(f"Total documents: {data.get('total', 0)}")
         
+        # Check document structure
+        statuses = data.get('statuses', {})
+        for status, docs in statuses.items():
+            print(f"  {status}: {len(docs)} documents")
+        
         # Show first document if available
-        if data.get('statuses', {}).get('processed'):
-            first_doc = data['statuses']['processed'][0]
+        if statuses.get('processed'):
+            first_doc = statuses['processed'][0]
             print(f"\nFirst document:")
             print(f"  ID: {first_doc.get('id')}")
             print(f"  File Path: {first_doc.get('file_path')}")
-            print(f"  Source URL: {first_doc.get('metadata', {}).get('source_url')}")
+            if first_doc.get('metadata'):
+                print(f"  Source URL: {first_doc['metadata'].get('source_url')}")
     else:
         print(f"Error: {response.text}")
+    print()
+
+def test_document_stats():
+    """Test document statistics endpoint"""
+    print("Testing document stats...")
+    response = requests.get(f"{BASE_URL}/documents/stats")
+    
+    print(f"Status: {response.status_code}")
+    if response.status_code == 200:
+        stats = response.json()
+        print(f"Stats: {json.dumps(stats, indent=2)}")
     print()
 
 def test_get_by_sitemap():
@@ -112,38 +129,6 @@ def test_delete_by_sitemap():
     print(f"Response: {json.dumps(response.json(), indent=2)}")
     print()
 
-def test_debug_storage():
-    """Test debug storage endpoint"""
-    print("Testing debug storage endpoint...")
-    response = requests.get(f"{BASE_URL}/debug/storage")
-    
-    print(f"Status: {response.status_code}")
-    if response.status_code == 200:
-        data = response.json()
-        print(f"Debug info:")
-        print(f"  Metadata store count: {data.get('metadata_store_count', 0)}")
-        print(f"  LightRAG storage: {data.get('lightrag_storage', 'Unknown')}")
-        print(f"  RAG instance type: {data.get('rag_instance_type', 'Unknown')}")
-    print()
-
-def test_status_endpoints():
-    """Test various status endpoints"""
-    print("Testing status endpoints...")
-    
-    # Test /status
-    print("  Testing /status...")
-    response = requests.get(f"{BASE_URL}/status")
-    if response.status_code == 200:
-        print(f"    System status: {response.json().get('status')}")
-        print(f"    Document count: {response.json().get('documents', {}).get('total', 0)}")
-    
-    # Test /documents/status
-    print("  Testing /documents/status...")
-    response = requests.get(f"{BASE_URL}/documents/status")
-    if response.status_code == 200:
-        print(f"    Total documents: {response.json().get('total', 0)}")
-    print()
-
 def test_webui():
     """Test WebUI availability"""
     print("Testing WebUI endpoint...")
@@ -177,9 +162,6 @@ if __name__ == "__main__":
     # Run tests
     test_health()
     
-    # Test status endpoints
-    test_status_endpoints()
-    
     # Test WebUI
     test_webui()
     
@@ -192,8 +174,8 @@ if __name__ == "__main__":
     # Get documents
     test_get_documents()
     
-    # Test debug endpoint
-    test_debug_storage()
+    # Get document stats
+    test_document_stats()
     
     # Get by sitemap
     test_get_by_sitemap()
