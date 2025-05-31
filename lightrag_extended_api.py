@@ -205,12 +205,12 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             domain = parsed_url.netloc.replace('www.', '')
             path = parsed_url.path.strip('/')  # Remove leading and trailing slashes
             
-            # Format: "[domain.com] path/to/page"
-            # If path is empty (root page), show 'home' or just domain
+            # Format: "[domain.com] path"
             if path:
                 file_path = f"[{domain}] {path}"
             else:
-                file_path = f"[{domain}] home"
+                # For root domain (https://ai.pydantic.dev/)
+                file_path = f"[{domain}]"
         else:
             file_path = f"text/{doc_id}.txt"
         
