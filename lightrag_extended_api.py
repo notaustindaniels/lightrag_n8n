@@ -198,15 +198,25 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         # Compute document ID
         doc_id = compute_doc_id(enriched_content)
         
-        # Create file path based on sitemap URL with domain prefix for better visibility
-        if request.sitemap_url:
-            # Extract domain from sitemap URL for better display when truncated
-            parsed_url = urlparse(request.sitemap_url)
+        # Create file path based on source URL (actual page) for better visibility
+        if request.source_url:
+            # Extract domain and path from source URL for cleaner display
+            parsed_url = urlparse(request.source_url)
             domain = parsed_url.netloc.replace('www.', '')
-            # Format: "[domain] sitemap.xml" - domain in brackets for visibility
-            file_path = f"[{domain}] sitemap.xml"
+            path = parsed_url.path.strip('/')  # Remove leading/trailing slashes
+            
+            # Remove common prefixes like 'docs/' if present
+            if path.startswith('docs/'):
+                path = path[5:]
+            
+            # If no path or just empty, show 'home'
+            if not path:
+                path = 'home'
+            
+            # Format: "[domain.com] path/to/page"
+            file_path = f"[{domain}] {path}"
         else:
-            file_path = request.source_url if request.source_url else f"text/{doc_id}.txt"
+            file_path = f"text/{doc_id}.txt"
         
         # Store metadata
         metadata_store[doc_id] = {
