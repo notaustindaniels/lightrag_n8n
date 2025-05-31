@@ -200,21 +200,17 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         
         # Create file path based on source URL (actual page) for better visibility
         if request.source_url:
-            # Extract domain and path from source URL for cleaner display
+            # Extract domain and path from source URL for better display
             parsed_url = urlparse(request.source_url)
             domain = parsed_url.netloc.replace('www.', '')
-            path = parsed_url.path.strip('/')  # Remove leading/trailing slashes
-            
-            # Remove common prefixes like 'docs/' if present
-            if path.startswith('docs/'):
-                path = path[5:]
-            
-            # If no path or just empty, show 'home'
-            if not path:
-                path = 'home'
+            path = parsed_url.path.strip('/')  # Remove leading and trailing slashes
             
             # Format: "[domain.com] path/to/page"
-            file_path = f"[{domain}] {path}"
+            # If path is empty (root page), show 'home' or just domain
+            if path:
+                file_path = f"[{domain}] {path}"
+            else:
+                file_path = f"[{domain}] home"
         else:
             file_path = f"text/{doc_id}.txt"
         
