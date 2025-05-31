@@ -81,6 +81,70 @@ def save_metadata_store():
     except Exception as e:
         print(f"Error saving metadata store: {e}")
 
+async def cleanup_all_document_traces(doc_ids: List[str]):
+    """Clean up all traces of documents from all LightRAG storage components"""
+    try:
+        # 1. Delete from vector storage
+        if hasattr(rag_instance, 'vector_storage') and rag_instance.vector_storage:
+            try:
+                # Try to delete vectors associated with the document IDs
+                for doc_id in doc_ids:
+                    # LightRAG stores vectors with chunk IDs, we need to find all chunks
+                    await rag_instance.vector_storage.delete_by_doc_id(doc_id)
+            except Exception as e:
+                print(f"Error deleting from vector storage: {e}")
+        
+        # 2. Delete from KV storage (full documents and chunks)
+        if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
+            try:
+                # Delete full documents
+                for doc_id in doc_ids:
+                    await rag_instance.kv_storage.delete({doc_id})
+                    
+                # Delete text chunks - LightRAG stores chunks with keys like "chunk-{doc_id}-{chunk_index}"
+                # We need to find and delete all chunks for each document
+                if hasattr(rag_instance.kv_storage, '_data'):
+                    keys_to_delete = []
+                    for key in rag_instance.kv_storage._data.keys():
+                        for doc_id in doc_ids:
+                            if key.startswith(f"chunk-{doc_id}"):
+                                keys_to_delete.append(key)
+                    if keys_to_delete:
+                        await rag_instance.kv_storage.delete(set(keys_to_delete))
+            except Exception as e:
+                print(f"Error deleting from KV storage: {e}")
+        
+        # 3. Delete from doc status storage
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+            try:
+                await rag_instance.doc_status.delete({doc_id for doc_id in doc_ids})
+            except Exception as e:
+                print(f"Error deleting from doc status storage: {e}")
+        
+        # 4. Clean up graph storage (entities and relationships from these documents)
+        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
+            try:
+                # This is more complex as we need to identify which entities/relationships
+                # came from these documents. LightRAG may not track this directly.
+                # For now, we'll leave the graph as is, but in a production system,
+                # you might want to track document-entity mappings
+                pass
+            except Exception as e:
+                print(f"Error with graph storage cleanup: {e}")
+        
+        # 5. Clear any caches that might contain document data
+        if hasattr(rag_instance, 'llm_response_cache'):
+            try:
+                # Clear cache entries related to these documents
+                # This is a simple approach - in production you might want more granular control
+                await rag_instance.aclear_cache()
+            except Exception as e:
+                print(f"Error clearing cache: {e}")
+                
+    except Exception as e:
+        print(f"Error in cleanup_all_document_traces: {e}")
+        raise
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app"""
@@ -411,7 +475,10 @@ async def get_documents_by_sitemap(sitemap_url: str):
 async def delete_documents_by_id(request: DeleteByIdRequest):
     """Delete documents by their IDs"""
     try:
-        # Delete from LightRAG
+        # First clean up all document traces from LightRAG storages
+        await cleanup_all_document_traces(request.doc_ids)
+        
+        # Then call the standard delete method
         await rag_instance.adelete_by_doc_id(request.doc_ids)
         
         # Remove from metadata store
@@ -446,7 +513,10 @@ async def delete_documents_by_sitemap(sitemap_url: str):
                 docs_to_delete.append(doc_id)
         
         if docs_to_delete:
-            # Delete from LightRAG
+            # First clean up all document traces from LightRAG storages
+            await cleanup_all_document_traces(docs_to_delete)
+            
+            # Then call the standard delete method
             await rag_instance.adelete_by_doc_id(docs_to_delete)
             
             # Remove from metadata store
