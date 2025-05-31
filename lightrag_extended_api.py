@@ -8,7 +8,6 @@ import hashlib
 import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -198,19 +197,8 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         # Compute document ID
         doc_id = compute_doc_id(enriched_content)
         
-        # Create file path based on sitemap domain
-        if request.sitemap_url:
-            # Extract domain from sitemap URL
-            from urllib.parse import urlparse
-            parsed_url = urlparse(request.sitemap_url)
-            domain = parsed_url.netloc or parsed_url.path
-            # Clean up domain for filename
-            domain = domain.replace('www.', '').replace(':', '_')
-            file_path = f"{domain}/{doc_id}.txt"
-        elif request.source_url:
-            file_path = request.source_url
-        else:
-            file_path = f"text/{doc_id}.txt"
+        # Create file path based on sitemap URL (for webui display) or use a default
+        file_path = request.sitemap_url if request.sitemap_url else (request.source_url if request.source_url else f"text/{doc_id}.txt")
         
         # Store metadata
         metadata_store[doc_id] = {
