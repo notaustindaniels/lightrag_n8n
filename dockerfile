@@ -17,35 +17,20 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir lightrag-hku[api] && \
     pip install --no-cache-dir fastapi uvicorn[standard] python-multipart aiofiles wcwidth pydantic
 
-# Copy the extended API and migration script
+# Copy scripts and API
 COPY lightrag_extended_api.py /app/
 COPY migrate_metadata.py /app/
+COPY download_webui.sh /app/
+COPY build_webui.sh /app/
 
-# Create webui directory
-RUN mkdir -p /app/webui
+# Make scripts executable
+RUN chmod +x /app/download_webui.sh /app/build_webui.sh
 
-# Copy webui directory if it exists (using a two-stage approach)
-# First, copy everything to ensure build doesn't fail
-COPY . /tmp/build/
-# Then selectively copy webui if it exists
-RUN if [ -d "/tmp/build/webui" ]; then cp -r /tmp/build/webui/* /app/webui/; fi && \
-    rm -rf /tmp/build
-
-# Check if webui exists in the installed package and log the result
-RUN python -c "import site; import glob; import os; \
-    found = False; \
-    for site_dir in site.getsitepackages(): \
-        pattern = os.path.join(site_dir, 'lightrag*/lightrag/api/webui'); \
-        matches = glob.glob(pattern); \
-        if matches and os.path.exists(matches[0]): \
-            print(f'Package WebUI found at: {matches[0]}'); \
-            found = True; \
-            break; \
-    if not found: print('Package WebUI not found'); \
-    print(f'Local WebUI fallback will be at: /app/webui')"
+# Try to get WebUI files
+RUN /app/download_webui.sh || echo "WebUI download failed, continuing..."
 
 # Create necessary directories
-RUN mkdir -p /app/data/rag_storage /app/data/inputs
+RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/webui
 
 # Set environment variables
 ENV WORKING_DIR=/app/data/rag_storage

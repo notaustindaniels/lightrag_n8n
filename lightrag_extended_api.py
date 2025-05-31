@@ -3,18 +3,14 @@
 Extended LightRAG API Server that adds missing functionality for document management
 """
 import os
-import sys
 import asyncio
 import hashlib
-import glob
-import site
-import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 import uvicorn
 from contextlib import asynccontextmanager
@@ -76,56 +72,46 @@ def compute_doc_id(content: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app"""
-    global rag_instance, metadata_store
+    global rag_instance
     
-    # Setup paths
+    # Startup
     working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
     os.makedirs(working_dir, exist_ok=True)
-    metadata_file = os.path.join(working_dir, "document_metadata.json")
     
-    try:
-        # Startup - load metadata
-        if os.path.exists(metadata_file):
-            try:
-                with open(metadata_file, 'r') as f:
-                    metadata_store = json.load(f)
-                print(f"Loaded {len(metadata_store)} documents from metadata store")
-            except Exception as e:
-                print(f"Warning: Could not load metadata store: {e}")
-                metadata_store = {}
-        
-        # Initialize LightRAG
-        print("Initializing LightRAG...")
-        rag_instance = LightRAG(
-            working_dir=working_dir,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=1536,
-                max_token_size=8192,
-                func=openai_embed
-            ),
-            llm_model_func=gpt_4o_mini_complete,
-        )
-        
-        print("Initializing storages...")
-        await rag_instance.initialize_storages()
-        await initialize_pipeline_status()
-        print("LightRAG initialized successfully")
-        
-    except Exception as e:
-        print(f"Error during startup: {e}")
-        # Don't raise - let the server start even if RAG init fails
-        rag_instance = None
+    # Initialize metadata store file
+    metadata_file = os.path.join(working_dir, "document_metadata.json")
+    if os.path.exists(metadata_file):
+        import json
+        try:
+            with open(metadata_file, 'r') as f:
+                global metadata_store
+                metadata_store = json.load(f)
+        except:
+            metadata_store = {}
+    
+    # Initialize LightRAG
+    rag_instance = LightRAG(
+        working_dir=working_dir,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=1536,
+            max_token_size=8192,
+            func=openai_embed
+        ),
+        llm_model_func=gpt_4o_mini_complete,
+    )
+    
+    await rag_instance.initialize_storages()
+    await initialize_pipeline_status()
     
     yield
     
     # Shutdown - save metadata
     try:
-        if metadata_store:
-            with open(metadata_file, 'w') as f:
-                json.dump(metadata_store, f, indent=2)
-            print(f"Saved {len(metadata_store)} documents to metadata store")
-    except Exception as e:
-        print(f"Warning: Could not save metadata store: {e}")
+        import json
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata_store, f, indent=2)
+    except:
+        pass
 
 # Create FastAPI app
 app = FastAPI(
@@ -144,40 +130,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount webui static files
-try:
-    # Try to find the webui in the installed lightrag package
-    import site
-    import glob
-    
-    # Search for the webui in site-packages
-    webui_found = False
-    for site_dir in site.getsitepackages():
-        pattern = os.path.join(site_dir, 'lightrag*/lightrag/api/webui')
-        matches = glob.glob(pattern)
-        if matches:
-            webui_path = matches[0]
-            if os.path.exists(webui_path):
-                app.mount("/webui", StaticFiles(directory=webui_path, html=True), name="webui")
-                print(f"WebUI mounted from: {webui_path}")
-                webui_found = True
-                break
-    
-    if not webui_found:
-        # Try alternative location (if running from source)
-        alt_webui_path = os.path.join(os.path.dirname(__file__), 'webui')
-        if os.path.exists(alt_webui_path):
-            app.mount("/webui", StaticFiles(directory=alt_webui_path, html=True), name="webui")
-            print(f"WebUI mounted from: {alt_webui_path}")
-        else:
-            print("Warning: WebUI static files not found")
-except Exception as e:
-    print(f"Warning: Could not mount WebUI: {e}")
+# Mount WebUI if available
+webui_path = "/app/webui"
+webui_mounted = False
 
-@app.get("/")
+if os.path.exists(webui_path) and os.path.isdir(webui_path):
+    print(f"Mounting WebUI from {webui_path}")
+    app.mount("/webui", StaticFiles(directory=webui_path, html=True), name="webui")
+    webui_mounted = True
+else:
+    # Try alternative paths
+    alt_paths = [
+        "/usr/local/lib/python3.11/site-packages/lightrag/api/webui",
+        "./webui",
+        "../lightrag/api/webui"
+    ]
+    for path in alt_paths:
+        if os.path.exists(path) and os.path.isdir(path):
+            print(f"Mounting WebUI from {path}")
+            app.mount("/webui", StaticFiles(directory=path, html=True), name="webui")
+            webui_path = path
+            webui_mounted = True
+            break
+    
+    if not webui_mounted:
+        print("Warning: WebUI directory not found. Web interface will not be available.")
+
+@app.get("/", include_in_schema=False)
 async def root():
-    """Redirect to webui"""
-    return RedirectResponse(url="/webui")
+    """Redirect root to WebUI"""
+    if webui_mounted:
+        return RedirectResponse(url="/webui/")
+    else:
+        return {"message": "LightRAG Extended API", "webui": "Not available", "docs": "/docs"}
 
 @app.get("/health")
 async def health_check():
@@ -187,9 +172,6 @@ async def health_check():
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
     """Enhanced text insertion with full metadata support"""
-    if not rag_instance:
-        raise HTTPException(status_code=503, detail="RAG service not initialized")
-    
     try:
         # Prepare metadata header
         metadata_parts = []
@@ -226,8 +208,8 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             "content_summary": enriched_content[:200] + "..." if len(enriched_content) > 200 else enriched_content
         }
         
-        # Insert into LightRAG with file path and doc_id
-        await rag_instance.ainsert(enriched_content, file_paths=[file_path], ids=[doc_id])
+        # Insert into LightRAG with file path
+        await rag_instance.ainsert(enriched_content, file_paths=[file_path])
         
         return {
             "status": "success",
@@ -242,9 +224,6 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
 @app.post("/documents/text")
 async def insert_text(request: TextInsertRequest):
     """Standard text insertion with file_path support"""
-    if not rag_instance:
-        raise HTTPException(status_code=503, detail="RAG service not initialized")
-    
     try:
         # Compute document ID
         doc_id = compute_doc_id(request.text)
@@ -261,8 +240,8 @@ async def insert_text(request: TextInsertRequest):
             "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
         }
         
-        # Insert into LightRAG with file path and doc_id
-        await rag_instance.ainsert(request.text, file_paths=[file_path], ids=[doc_id])
+        # Insert into LightRAG with file path
+        await rag_instance.ainsert(request.text, file_paths=[file_path])
         
         return {
             "status": "success",
@@ -278,85 +257,39 @@ async def insert_text(request: TextInsertRequest):
 async def get_documents():
     """Get all documents with proper file_path handling"""
     try:
-        # Initialize response structure
+        # Get documents from LightRAG's document status storage
+        doc_status = rag_instance.doc_status
+        
         documents = []
-        
-        # Check if LightRAG has a doc_status storage
-        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
-            try:
-                # Try to get documents from the official doc_status storage
-                doc_status_storage = rag_instance.doc_status
+        if hasattr(doc_status, 'get_all_docs'):
+            raw_docs = await doc_status.get_all_docs()
+            
+            for doc in raw_docs:
+                doc_id = doc.get('id', '')
+                # Get metadata from our store
+                metadata = metadata_store.get(doc_id, {})
                 
-                # Try different methods to get documents
-                if hasattr(doc_status_storage, 'get_all_doc_status'):
-                    all_docs = await doc_status_storage.get_all_doc_status()
-                elif hasattr(doc_status_storage, 'get_all_docs'):
-                    all_docs = await doc_status_storage.get_all_docs()
-                elif hasattr(doc_status_storage, 'get_all'):
-                    all_docs = await doc_status_storage.get_all()
-                else:
-                    all_docs = []
+                # Ensure file_path exists
+                file_path = metadata.get('file_path', doc.get('file_path', f"text/{doc_id}.txt"))
                 
-                # Process documents from doc_status
-                for doc in all_docs:
-                    if isinstance(doc, dict):
-                        doc_id = doc.get('id', '')
-                        # Merge with our metadata if available
-                        metadata = metadata_store.get(doc_id, {})
-                        
-                        documents.append({
-                            "id": doc_id,
-                            "file_path": doc.get('file_path') or metadata.get('file_path', f"text/{doc_id}.txt"),
-                            "status": doc.get('status', 'processed'),
-                            "created_at": doc.get('created_at'),
-                            "updated_at": doc.get('updated_at'),
-                            "metadata": metadata
-                        })
-            except Exception as e:
-                print(f"Warning: Could not get documents from doc_status: {e}")
-        
-        # If no documents from doc_status, use our metadata store
-        if not documents:
-            for doc_id, metadata in metadata_store.items():
                 documents.append({
                     "id": doc_id,
-                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
-                    "status": "processed",
-                    "created_at": metadata.get('indexed_at'),
-                    "updated_at": metadata.get('indexed_at'),
-                    "metadata": metadata
+                    "file_path": file_path,
+                    "metadata": metadata,
+                    "status": doc.get('status', 'processed')
                 })
         
-        # Group documents by status
-        statuses = {
-            "processed": [],
-            "pending": [],
-            "failed": []
-        }
-        
-        for doc in documents:
-            status = doc.get('status', 'processed')
-            if status in statuses:
-                statuses[status].append(doc)
-            else:
-                statuses['processed'].append(doc)
-        
         return {
-            "statuses": statuses,
+            "statuses": {
+                "processed": documents,
+                "pending": [],
+                "failed": []
+            },
             "total": len(documents)
         }
         
     except Exception as e:
-        print(f"Error in get_documents: {e}")
-        # Return empty structure on error
-        return {
-            "statuses": {
-                "processed": [],
-                "pending": [],
-                "failed": []
-            },
-            "total": 0
-        }
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents/by-sitemap/{sitemap_url:path}")
 async def get_documents_by_sitemap(sitemap_url: str):
@@ -388,16 +321,11 @@ async def get_documents_by_sitemap(sitemap_url: str):
 async def delete_documents_by_id(request: DeleteByIdRequest):
     """Delete documents by their IDs"""
     try:
-        deleted_count = 0
-        
-        # Delete from LightRAG if available
-        if rag_instance:
-            try:
-                await rag_instance.adelete_by_doc_id(request.doc_ids)
-            except Exception as e:
-                print(f"Warning: Could not delete from LightRAG: {e}")
+        # Delete from LightRAG
+        await rag_instance.adelete_by_doc_id(request.doc_ids)
         
         # Remove from metadata store
+        deleted_count = 0
         for doc_id in request.doc_ids:
             if doc_id in metadata_store:
                 del metadata_store[doc_id]
@@ -442,31 +370,9 @@ async def delete_documents_by_sitemap(sitemap_url: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/documents/stats")
-async def get_document_stats():
-    """Get document statistics"""
-    try:
-        total = len(metadata_store)
-        return {
-            "total": total,
-            "processed": total,
-            "pending": 0,
-            "failed": 0
-        }
-    except Exception as e:
-        return {
-            "total": 0,
-            "processed": 0,
-            "pending": 0,
-            "failed": 0
-        }
-
 @app.post("/query")
 async def query(request: QueryRequest):
     """Query the RAG system"""
-    if not rag_instance:
-        raise HTTPException(status_code=503, detail="RAG service not initialized")
-    
     try:
         param = QueryParam(
             mode=request.mode,
@@ -488,14 +394,9 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "9621"))
     host = os.getenv("HOST", "0.0.0.0")
     
-    print(f"Starting Extended LightRAG API Server on {host}:{port}")
-    print(f"WebUI will be available at http://{host}:{port}/webui")
-    print(f"API docs available at http://{host}:{port}/docs")
-    
     uvicorn.run(
         "lightrag_extended_api:app",
         host=host,
         port=port,
-        reload=False,
-        log_level="info"
+        reload=False
     )

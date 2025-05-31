@@ -9,7 +9,9 @@ services:
       - ./data:/app/data
       - ./lightrag_extended_api.py:/app/lightrag_extended_api.py
       - ./migrate_metadata.py:/app/migrate_metadata.py
-      - ./webui:/app/webui:ro
+      - ./download_webui.sh:/app/download_webui.sh
+      - ./build_webui.sh:/app/build_webui.sh
+      - ./webui:/app/webui  # Optional: mount local webui if you have it
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}

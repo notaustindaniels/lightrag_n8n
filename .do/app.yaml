@@ -11,9 +11,7 @@ services:
   name: lightrag
   routes:
   - path: /
-  run_command: |
-    mkdir -p /app/webui && \
-    python /app/lightrag_extended_api.py
+  run_command: python /app/lightrag_extended_api.py
   source_dir: /
   envs:
   - key: OPENAI_API_KEY
@@ -37,3 +35,6 @@ services:
   - key: PORT
     scope: RUN_TIME
     value: "9621"
+  - key: WEBUI_ENABLED
+    scope: RUN_TIME
+    value: "true"

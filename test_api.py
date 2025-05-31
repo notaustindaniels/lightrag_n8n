@@ -17,6 +17,22 @@ def test_health():
     print(f"Response: {response.json()}")
     print()
 
+def test_webui():
+    """Test WebUI availability"""
+    print("Testing WebUI endpoint...")
+    response = requests.get(f"{BASE_URL}/webui/")
+    print(f"Status: {response.status_code}")
+    if response.status_code == 200:
+        print("WebUI is available!")
+    else:
+        print("WebUI not available")
+    
+    # Test root redirect
+    response = requests.get(f"{BASE_URL}/", allow_redirects=False)
+    if response.status_code in [301, 302, 307, 308]:
+        print(f"Root redirects to: {response.headers.get('Location')}")
+    print()
+
 def test_enhanced_insert():
     """Test enhanced document insertion"""
     print("Testing enhanced document insertion...")
@@ -52,32 +68,15 @@ def test_get_documents():
         data = response.json()
         print(f"Total documents: {data.get('total', 0)}")
         
-        # Check document structure
-        statuses = data.get('statuses', {})
-        for status, docs in statuses.items():
-            print(f"  {status}: {len(docs)} documents")
-        
         # Show first document if available
-        if statuses.get('processed'):
-            first_doc = statuses['processed'][0]
+        if data.get('statuses', {}).get('processed'):
+            first_doc = data['statuses']['processed'][0]
             print(f"\nFirst document:")
             print(f"  ID: {first_doc.get('id')}")
             print(f"  File Path: {first_doc.get('file_path')}")
-            if first_doc.get('metadata'):
-                print(f"  Source URL: {first_doc['metadata'].get('source_url')}")
+            print(f"  Source URL: {first_doc.get('metadata', {}).get('source_url')}")
     else:
         print(f"Error: {response.text}")
-    print()
-
-def test_document_stats():
-    """Test document statistics endpoint"""
-    print("Testing document stats...")
-    response = requests.get(f"{BASE_URL}/documents/stats")
-    
-    print(f"Status: {response.status_code}")
-    if response.status_code == 200:
-        stats = response.json()
-        print(f"Stats: {json.dumps(stats, indent=2)}")
     print()
 
 def test_get_by_sitemap():
@@ -129,40 +128,12 @@ def test_delete_by_sitemap():
     print(f"Response: {json.dumps(response.json(), indent=2)}")
     print()
 
-def test_webui():
-    """Test WebUI availability"""
-    print("Testing WebUI endpoint...")
-    
-    # Test root redirect
-    print("  Testing root redirect...")
-    response = requests.get(f"{BASE_URL}/", allow_redirects=False)
-    if response.status_code == 307:
-        print(f"  Root redirects to: {response.headers.get('location')}")
-    
-    # Test webui endpoint
-    print("  Testing /webui endpoint...")
-    response = requests.get(f"{BASE_URL}/webui")
-    print(f"  Status: {response.status_code}")
-    if response.status_code == 200:
-        print("  WebUI is available!")
-        print(f"  Content length: {len(response.content)} bytes")
-        # Check if it's the full UI or fallback
-        if b"LightRAG Extended API" in response.content:
-            print("  Using fallback WebUI")
-        else:
-            print("  Full LightRAG WebUI detected")
-    else:
-        print("  WebUI not available")
-    print()
-
 if __name__ == "__main__":
     print("Enhanced LightRAG API Test Suite")
     print("=" * 50)
     
     # Run tests
     test_health()
-    
-    # Test WebUI
     test_webui()
     
     # Insert a document
@@ -173,9 +144,6 @@ if __name__ == "__main__":
     
     # Get documents
     test_get_documents()
-    
-    # Get document stats
-    test_document_stats()
     
     # Get by sitemap
     test_get_by_sitemap()

@@ -1,18 +1,10 @@
-# Enhanced LightRAG with Extended API
+# Enhanced LightRAG with Extended API and WebUI
 
-This repository extends the LightRAG REST API to solve the file_path validation error and add enhanced document management capabilities.
-
-## Quick Start
-
-1. Clone or download this repository
-2. Copy `.env.example` to `.env` and add your OpenAI API key
-3. Run `docker-compose up -d --build`
-4. Access the WebUI at http://localhost:9621/webui
-5. Import the n8n workflow and update the endpoint URLs
+This repository extends the LightRAG REST API to solve the file_path validation error, add enhanced document management capabilities, and restore the WebUI functionality.
 
 ## Problem Solved
 
-The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field when inserting documents, which causes a Pydantic validation error when retrieving documents via the `/documents` endpoint. This enhanced version fixes this issue and adds additional functionality.
+The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field when inserting documents, which causes a Pydantic validation error when retrieving documents via the `/documents` endpoint. This enhanced version fixes this issue, adds additional functionality, and maintains the WebUI.
 
 ## Key Features
 
@@ -23,9 +15,15 @@ The original LightRAG `/documents/text` endpoint doesn't set a `file_path` field
    - Adds `/documents/by-sitemap/{sitemap_url}` DELETE endpoint for bulk deletion (returns success even if no documents exist)
    - Maintains an in-memory metadata store that persists to disk
    - Fully compatible with existing LightRAG Python API
-   - **Includes WebUI support** at `/webui` (when available)
+   - **Serves the LightRAG WebUI at `/webui`**
 
-2. **Enhanced n8n Workflow**:
+2. **WebUI Support**:
+   - Automatically serves the LightRAG web interface at `http://localhost:9621/webui`
+   - Root URL (`/`) redirects to the WebUI
+   - Includes knowledge graph visualization
+   - Full compatibility with the original LightRAG UI
+
+3. **Enhanced n8n Workflow**:
    - Automatically attempts to delete old documents from a sitemap before re-indexing (handles 404 gracefully)
    - Uses the enhanced endpoint to insert documents with full metadata
    - Tracks source URLs and document indices
@@ -142,6 +140,7 @@ Update these nodes with your deployment URLs:
 5. **Persistent metadata** - Document metadata survives restarts
 6. **Simplified workflow** - No need for redundant sitemap identifiers
 7. **Graceful error handling** - Deletion works even if no documents exist
+8. **WebUI included** - Access the full LightRAG web interface with knowledge graph visualization
 
 ## Testing
 
@@ -166,49 +165,39 @@ Update these nodes with your deployment URLs:
    curl http://localhost:9621/documents
    ```
 
-## WebUI Access
+## Accessing the WebUI
 
-The extended API includes support for the LightRAG WebUI:
+Once the server is running, you can access the LightRAG web interface:
 
-1. **Primary WebUI**: The full LightRAG webui is included with the `lightrag-hku[api]` package and will be automatically served at:
-   - `http://localhost:9621/webui`
-   - The root URL (`/`) redirects to `/webui`
+1. Open your browser and navigate to: `http://localhost:9621/webui`
+2. Or simply go to `http://localhost:9621` (automatically redirects to WebUI)
 
-2. **Fallback WebUI**: If the full webui is not found in the package, the fallback page (`webui/index.html`) provides:
-   - Available API endpoints
-   - Links to health check and API documentation
-   - Quick reference for all endpoints
+The WebUI provides:
+- Document management interface
+- Knowledge graph visualization
+- Query interface with different modes
+- System status and statistics
 
-3. **API Documentation**: Interactive API docs are always available at:
-   - `http://localhost:9621/docs` - Swagger UI
-   - `http://localhost:9621/redoc` - ReDoc
+If the WebUI is not available, you can:
+1. Check the logs for WebUI mounting messages
+2. Build it manually from the LightRAG repository
+3. Place the built files in the `webui` directory
 
-### WebUI Troubleshooting
+### Building WebUI Manually (Optional)
 
-If documents aren't showing in the WebUI:
+If the WebUI wasn't automatically set up during the build, you can build it manually:
 
-1. **Check the debug endpoint**: Visit `http://localhost:9621/debug/storage` to see:
-   - How many documents are in the metadata store
-   - Whether LightRAG's internal storage is accessible
-   - Storage types being used
+```bash
+# Option 1: Run inside the container
+docker exec -it <container_name> /app/build_webui.sh
 
-2. **Monitor requests**: The server logs all incoming requests. Watch the console to see what endpoints the webui is calling.
-
-3. **Test with the API**: Use the test script to verify documents are being inserted:
-   ```bash
-   python test_api.py
-   ```
-
-4. **Check document format**: The webui expects documents with these fields:
-   - `id`: Document ID
-   - `file_path`: Path to the document
-   - `status`: Processing status (processed/pending/failed)
-   - `description`: Optional description
-   - `content_summary`: Brief content preview
-
-5. **File uploads**: The webui can upload files via:
-   - `/documents/file` - Single file upload
-   - `/documents/batch` - Multiple file upload
+# Option 2: Build locally and mount
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG/lightrag_webui
+bun install --frozen-lockfile
+bun run build --emptyOutDir
+# Copy the built files from lightrag/api/webui to your local webui directory
+```
 
 ## Migration from Previous Version
 
