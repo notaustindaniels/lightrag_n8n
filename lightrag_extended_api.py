@@ -5,6 +5,7 @@ Extended LightRAG API Server that adds missing functionality for document manage
 import os
 import asyncio
 import hashlib
+import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
@@ -69,6 +70,16 @@ def compute_doc_id(content: str) -> str:
     """Compute document ID using MD5 hash of content"""
     return f"doc-{hashlib.md5(content.strip().encode()).hexdigest()}"
 
+def save_metadata_store():
+    """Save metadata store to disk"""
+    try:
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        metadata_file = os.path.join(working_dir, "document_metadata.json")
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata_store, f, indent=2)
+    except Exception as e:
+        print(f"Error saving metadata store: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI app"""
@@ -81,7 +92,6 @@ async def lifespan(app: FastAPI):
     # Initialize metadata store file
     metadata_file = os.path.join(working_dir, "document_metadata.json")
     if os.path.exists(metadata_file):
-        import json
         try:
             with open(metadata_file, 'r') as f:
                 global metadata_store
@@ -106,12 +116,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown - save metadata
-    try:
-        import json
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata_store, f, indent=2)
-    except:
-        pass
+    save_metadata_store()
 
 # Create FastAPI app
 app = FastAPI(
@@ -208,6 +213,9 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             "content_summary": enriched_content[:200] + "..." if len(enriched_content) > 200 else enriched_content
         }
         
+        # Save metadata after each insert
+        save_metadata_store()
+        
         # Insert into LightRAG with file path
         await rag_instance.ainsert(enriched_content, file_paths=[file_path])
         
@@ -240,6 +248,9 @@ async def insert_text(request: TextInsertRequest):
             "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
         }
         
+        # Save metadata after each insert
+        save_metadata_store()
+        
         # Insert into LightRAG with file path
         await rag_instance.ainsert(request.text, file_paths=[file_path])
         
@@ -257,26 +268,90 @@ async def insert_text(request: TextInsertRequest):
 async def get_documents():
     """Get all documents with proper file_path handling"""
     try:
-        # Get documents from LightRAG's document status storage
-        doc_status = rag_instance.doc_status
-        
         documents = []
-        if hasattr(doc_status, 'get_all_docs'):
-            raw_docs = await doc_status.get_all_docs()
-            
-            for doc in raw_docs:
-                doc_id = doc.get('id', '')
-                # Get metadata from our store
-                metadata = metadata_store.get(doc_id, {})
+        
+        # Try to get documents from LightRAG's doc_status storage
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                # Try different methods to get documents from storage
+                doc_status_storage = rag_instance.doc_status
                 
-                # Ensure file_path exists
-                file_path = metadata.get('file_path', doc.get('file_path', f"text/{doc_id}.txt"))
+                # Method 1: Try to get all documents directly
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                        if all_docs:
+                            for doc_id, doc_data in all_docs.items():
+                                # Get metadata from our store
+                                metadata = metadata_store.get(doc_id, {})
+                                
+                                # Ensure file_path exists
+                                file_path = metadata.get('file_path', doc_data.get('file_path', f"text/{doc_id}.txt"))
+                                
+                                documents.append({
+                                    "id": doc_id,
+                                    "file_path": file_path,
+                                    "metadata": metadata,
+                                    "status": doc_data.get('status', 'processed')
+                                })
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
                 
+                # Method 2: Try to iterate through storage if it's dict-like
+                if not documents and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            for doc_id, doc_data in storage_data.items():
+                                # Get metadata from our store
+                                metadata = metadata_store.get(doc_id, {})
+                                
+                                # Ensure file_path exists
+                                file_path = metadata.get('file_path', f"text/{doc_id}.txt")
+                                
+                                documents.append({
+                                    "id": doc_id,
+                                    "file_path": file_path,
+                                    "metadata": metadata,
+                                    "status": 'processed'
+                                })
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                # Method 3: Try JSON storage file directly
+                if not documents:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                doc_status_data = json.load(f)
+                                for doc_id, doc_data in doc_status_data.items():
+                                    # Get metadata from our store
+                                    metadata = metadata_store.get(doc_id, {})
+                                    
+                                    # Ensure file_path exists
+                                    file_path = metadata.get('file_path', f"text/{doc_id}.txt")
+                                    
+                                    documents.append({
+                                        "id": doc_id,
+                                        "file_path": file_path,
+                                        "metadata": metadata,
+                                        "status": doc_data.get('status', 'processed')
+                                    })
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+            except Exception as e:
+                print(f"Error accessing doc_status storage: {e}")
+        
+        # If no documents found in doc_status, use metadata store
+        if not documents:
+            for doc_id, metadata in metadata_store.items():
                 documents.append({
                     "id": doc_id,
-                    "file_path": file_path,
+                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
                     "metadata": metadata,
-                    "status": doc.get('status', 'processed')
+                    "status": "processed"
                 })
         
         return {
@@ -289,6 +364,7 @@ async def get_documents():
         }
         
     except Exception as e:
+        print(f"Error in get_documents: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents/by-sitemap/{sitemap_url:path}")
@@ -331,6 +407,9 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
                 del metadata_store[doc_id]
                 deleted_count += 1
         
+        # Save updated metadata
+        save_metadata_store()
+        
         return {
             "status": "success",
             "message": f"Successfully deleted {deleted_count} documents",
@@ -359,6 +438,9 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             # Remove from metadata store
             for doc_id in docs_to_delete:
                 del metadata_store[doc_id]
+            
+            # Save updated metadata
+            save_metadata_store()
         
         return {
             "status": "success",
