@@ -26,3 +26,6 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+.mcp.json
+cursor-n8n-workflow8.json
