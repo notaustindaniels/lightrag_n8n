@@ -403,6 +403,10 @@ async def get_documents():
     try:
         documents = []
         
+        # Debug logging
+        print("\n=== Getting documents for WebUI ===")
+        print(f"Number of documents in metadata store: {len(metadata_store)}")
+        
         # Try to get documents from LightRAG's doc_status storage
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
             try:
@@ -426,8 +430,12 @@ async def get_documents():
                                 if not display_name:
                                     display_name = generate_display_name_from_file_path(file_path, doc_id)
                                 
+                                # Use file_path as the display ID if it's in the proper format
+                                display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
+                                
                                 documents.append({
-                                    "id": doc_id,
+                                    "id": display_id,  # This is what the WebUI displays
+                                    "doc_id": doc_id,  # Keep the actual doc_id for reference
                                     "file_path": file_path,
                                     "display_name": display_name,
                                     "metadata": metadata,
@@ -533,8 +541,12 @@ async def get_documents():
                     else:
                         display_name = f"text/{doc_id[:8]}..."
                 
+                # Use file_path as the display ID if it's in the proper format
+                display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
+                
                 documents.append({
-                    "id": doc_id,
+                    "id": display_id,  # This is what the WebUI displays
+                    "doc_id": doc_id,  # Keep the actual doc_id for reference
                     "file_path": file_path,
                     "display_name": display_name,
                     "metadata": metadata,
@@ -569,8 +581,12 @@ async def get_documents_by_sitemap(sitemap_url: str):
                 if not display_name:
                     display_name = generate_display_name_from_file_path(file_path, doc_id)
                     
+                # Use file_path as the display ID if it's in the proper format
+                display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
+                
                 matching_docs.append({
-                    "doc_id": doc_id,
+                    "id": display_id,  # What the WebUI displays
+                    "doc_id": doc_id,  # Actual document ID
                     "source_url": metadata.get('source_url'),
                     "file_path": file_path,
                     "display_name": display_name,
