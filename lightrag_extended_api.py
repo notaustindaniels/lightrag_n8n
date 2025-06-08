@@ -40,6 +40,7 @@ class EnhancedTextInsertRequest(BaseModel):
     sitemap_url: Optional[str] = None
     doc_index: Optional[int] = None
     total_docs: Optional[int] = None
+    document_id: Optional[str] = None  # Accept document_id from n8n workflow
 
 class DocumentMetadata(BaseModel):
     id: str
@@ -279,32 +280,46 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         # Compute document ID
         doc_id = compute_doc_id(enriched_content)
         
-        # Create file path based on source URL (actual page) for better visibility
-        display_name = None
-        if request.source_url:
-            # Extract domain and path from source URL for better display
-            parsed_url = urlparse(request.source_url)
-            domain = parsed_url.netloc.replace('www.', '')
-            path = parsed_url.path.strip('/')  # Remove leading and trailing slashes
+        # Check if document_id was provided by n8n workflow
+        if request.document_id:
+            # The document_id from n8n is already in the format we want to display
+            file_path = request.document_id
+            display_name = request.document_id
             
-            # For file_path, store the full path information
-            # Format: "[domain.com] full/path"
-            if path:
-                file_path = f"[{domain}] {path}"
-                # For display_name, show only the last part of the path
-                path_parts = path.split('/')
-                last_part = path_parts[-1] if path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else path)
-                display_name = f"[{domain}] {last_part}"
-            else:
-                # For root domain (https://ai.pydantic.dev/)
-                file_path = f"[{domain}]"
-                display_name = f"[{domain}]"
+            # Store the full URL path in metadata for reference
+            full_path = None
+            if request.source_url:
+                parsed_url = urlparse(request.source_url)
+                domain = parsed_url.netloc.replace('www.', '')
+                path = parsed_url.path.strip('/')
+                full_path = f"[{domain}] {path}" if path else f"[{domain}]"
         else:
-            file_path = f"text/{doc_id}.txt"
-            display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
+            # Create file path based on source URL (actual page) for better visibility
+            display_name = None
+            if request.source_url:
+                # Extract domain and path from source URL for better display
+                parsed_url = urlparse(request.source_url)
+                domain = parsed_url.netloc.replace('www.', '')
+                path = parsed_url.path.strip('/')  # Remove leading and trailing slashes
+                
+                # For file_path, store the full path information
+                # Format: "[domain.com] full/path"
+                if path:
+                    file_path = f"[{domain}] {path}"
+                    # For display_name, show only the last part of the path
+                    path_parts = path.split('/')
+                    last_part = path_parts[-1] if path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else path)
+                    display_name = f"[{domain}] {last_part}"
+                else:
+                    # For root domain (https://ai.pydantic.dev/)
+                    file_path = f"[{domain}]"
+                    display_name = f"[{domain}]"
+            else:
+                file_path = f"text/{doc_id}.txt"
+                display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
         
         # Store metadata
-        metadata_store[doc_id] = {
+        metadata_entry = {
             "id": doc_id,
             "file_path": file_path,
             "display_name": display_name,
@@ -317,17 +332,27 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             "content_summary": enriched_content[:200] + "..." if len(enriched_content) > 200 else enriched_content
         }
         
+        # Add full_path if we have it (when using document_id from n8n)
+        if request.document_id and 'full_path' in locals():
+            metadata_entry["full_path"] = full_path
+            
+        metadata_store[doc_id] = metadata_entry
+        
         # Save metadata after each insert
         save_metadata_store()
         
         # Insert into LightRAG with file path
         await rag_instance.ainsert(enriched_content, file_paths=[file_path])
         
+        # Log for debugging
+        print(f"Document inserted - ID: {doc_id}, file_path: {file_path}, document_id from n8n: {request.document_id}")
+        
         return {
             "status": "success",
             "message": "Document inserted successfully",
             "doc_id": doc_id,
-            "file_path": file_path
+            "file_path": file_path,
+            "display_name": display_name
         }
         
     except Exception as e:

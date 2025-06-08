@@ -56,14 +56,15 @@ def test_enhanced_insert():
     print(f"Response: {json.dumps(response.json(), indent=2)}")
     doc_id1 = response.json().get("doc_id") if response.status_code == 200 else None
     
-    # Test with deep path URL
+    # Test with deep path URL (simulating n8n workflow)
     test_doc2 = {
         "text": "This is another test document about advanced Python features like decorators and generators.",
         "description": "Advanced Python document",
         "source_url": "https://docs.python.org/3/library/functions/decorators/advanced-usage",
         "sitemap_url": "https://example.com/sitemap.xml",
         "doc_index": 2,
-        "total_docs": 2
+        "total_docs": 2,
+        "document_id": "[docs.python.org] 3/library/functions/decorators/advanced-usage"  # n8n sends this
     }
     
     response = requests.post(
