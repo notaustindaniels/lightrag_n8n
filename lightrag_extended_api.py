@@ -81,6 +81,23 @@ def save_metadata_store():
     except Exception as e:
         print(f"Error saving metadata store: {e}")
 
+def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
+    """Generate a display name from a file path for legacy documents"""
+    if "[" in file_path and "]" in file_path:
+        parts = file_path.split("] ", 1)
+        if len(parts) == 2:
+            domain_part = parts[0] + "]"
+            path_part = parts[1]
+            if "/" in path_part:
+                last_part = path_part.split("/")[-1]
+                return f"{domain_part} {last_part}"
+            else:
+                return file_path
+        else:
+            return file_path
+    else:
+        return f"text/{doc_id[:8]}..."
+
 async def cleanup_all_document_traces(doc_ids: List[str]):
     """Clean up all traces of documents from all LightRAG storage components"""
     try:
@@ -263,25 +280,34 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         doc_id = compute_doc_id(enriched_content)
         
         # Create file path based on source URL (actual page) for better visibility
+        display_name = None
         if request.source_url:
             # Extract domain and path from source URL for better display
             parsed_url = urlparse(request.source_url)
             domain = parsed_url.netloc.replace('www.', '')
             path = parsed_url.path.strip('/')  # Remove leading and trailing slashes
             
-            # Format: "[domain.com] path"
+            # For file_path, store the full path information
+            # Format: "[domain.com] full/path"
             if path:
                 file_path = f"[{domain}] {path}"
+                # For display_name, show only the last part of the path
+                path_parts = path.split('/')
+                last_part = path_parts[-1] if path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else path)
+                display_name = f"[{domain}] {last_part}"
             else:
                 # For root domain (https://ai.pydantic.dev/)
                 file_path = f"[{domain}]"
+                display_name = f"[{domain}]"
         else:
             file_path = f"text/{doc_id}.txt"
+            display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
         
         # Store metadata
         metadata_store[doc_id] = {
             "id": doc_id,
             "file_path": file_path,
+            "display_name": display_name,
             "source_url": request.source_url,
             "description": request.description,
             "indexed_at": datetime.utcnow().isoformat(),
@@ -317,10 +343,14 @@ async def insert_text(request: TextInsertRequest):
         # Use provided file_path or create one
         file_path = request.file_path if request.file_path else f"text/{doc_id}.txt"
         
+        # Generate display_name from file_path
+        display_name = generate_display_name_from_file_path(file_path, doc_id)
+        
         # Store metadata
         metadata_store[doc_id] = {
             "id": doc_id,
             "file_path": file_path,
+            "display_name": display_name,
             "description": request.description,
             "indexed_at": datetime.utcnow().isoformat(),
             "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
@@ -366,9 +396,15 @@ async def get_documents():
                                 # Ensure file_path exists
                                 file_path = metadata.get('file_path', doc_data.get('file_path', f"text/{doc_id}.txt"))
                                 
+                                # Handle legacy documents without display_name
+                                display_name = metadata.get('display_name')
+                                if not display_name:
+                                    display_name = generate_display_name_from_file_path(file_path, doc_id)
+                                
                                 documents.append({
                                     "id": doc_id,
                                     "file_path": file_path,
+                                    "display_name": display_name,
                                     "metadata": metadata,
                                     "status": doc_data.get('status', 'processed')
                                 })
@@ -387,9 +423,15 @@ async def get_documents():
                                 # Ensure file_path exists
                                 file_path = metadata.get('file_path', f"text/{doc_id}.txt")
                                 
+                                # Handle legacy documents without display_name
+                                display_name = metadata.get('display_name')
+                                if not display_name:
+                                    display_name = generate_display_name_from_file_path(file_path, doc_id)
+                                
                                 documents.append({
                                     "id": doc_id,
                                     "file_path": file_path,
+                                    "display_name": display_name,
                                     "metadata": metadata,
                                     "status": 'processed'
                                 })
@@ -411,9 +453,29 @@ async def get_documents():
                                     # Ensure file_path exists
                                     file_path = metadata.get('file_path', f"text/{doc_id}.txt")
                                     
+                                    # Handle legacy documents without display_name
+                                    display_name = metadata.get('display_name')
+                                    if not display_name:
+                                        # Generate display_name from file_path for legacy documents
+                                        if "[" in file_path and "]" in file_path:
+                                            parts = file_path.split("] ", 1)
+                                            if len(parts) == 2:
+                                                domain_part = parts[0] + "]"
+                                                path_part = parts[1]
+                                                if "/" in path_part:
+                                                    last_part = path_part.split("/")[-1]
+                                                    display_name = f"{domain_part} {last_part}"
+                                                else:
+                                                    display_name = file_path
+                                            else:
+                                                display_name = file_path
+                                        else:
+                                            display_name = f"text/{doc_id[:8]}..."
+                                    
                                     documents.append({
                                         "id": doc_id,
                                         "file_path": file_path,
+                                        "display_name": display_name,
                                         "metadata": metadata,
                                         "status": doc_data.get('status', 'processed')
                                     })
@@ -425,9 +487,31 @@ async def get_documents():
         # If no documents found in doc_status, use metadata store
         if not documents:
             for doc_id, metadata in metadata_store.items():
+                file_path = metadata.get('file_path', f"text/{doc_id}.txt")
+                display_name = metadata.get('display_name')
+                
+                # Handle legacy documents without display_name
+                if not display_name:
+                    # Generate display_name from file_path for legacy documents
+                    if "[" in file_path and "]" in file_path:
+                        parts = file_path.split("] ", 1)
+                        if len(parts) == 2:
+                            domain_part = parts[0] + "]"
+                            path_part = parts[1]
+                            if "/" in path_part:
+                                last_part = path_part.split("/")[-1]
+                                display_name = f"{domain_part} {last_part}"
+                            else:
+                                display_name = file_path
+                        else:
+                            display_name = file_path
+                    else:
+                        display_name = f"text/{doc_id[:8]}..."
+                
                 documents.append({
                     "id": doc_id,
-                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
+                    "file_path": file_path,
+                    "display_name": display_name,
                     "metadata": metadata,
                     "status": "processed"
                 })
@@ -455,10 +539,16 @@ async def get_documents_by_sitemap(sitemap_url: str):
             # Check both sitemap_url and sitemap_identifier (for legacy support)
             if (metadata.get('sitemap_url') == sitemap_url or 
                 metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
+                file_path = metadata.get('file_path', f"text/{doc_id}.txt")
+                display_name = metadata.get('display_name')
+                if not display_name:
+                    display_name = generate_display_name_from_file_path(file_path, doc_id)
+                    
                 matching_docs.append({
                     "doc_id": doc_id,
                     "source_url": metadata.get('source_url'),
-                    "file_path": metadata.get('file_path'),
+                    "file_path": file_path,
+                    "display_name": display_name,
                     "indexed_at": metadata.get('indexed_at')
                 })
         

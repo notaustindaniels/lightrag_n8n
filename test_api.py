@@ -37,26 +37,45 @@ def test_enhanced_insert():
     """Test enhanced document insertion"""
     print("Testing enhanced document insertion...")
     
-    test_doc = {
+    # Test with simple URL
+    test_doc1 = {
         "text": "This is a test document about Python programming. Python is a high-level programming language.",
         "description": "Test document for LightRAG",
         "source_url": "https://example.com/python-tutorial",
         "sitemap_url": "https://example.com/sitemap.xml",
         "doc_index": 1,
-        "total_docs": 1
+        "total_docs": 2
     }
     
     response = requests.post(
         f"{BASE_URL}/documents/text/enhanced",
-        json=test_doc
+        json=test_doc1
     )
     
     print(f"Status: {response.status_code}")
     print(f"Response: {json.dumps(response.json(), indent=2)}")
+    doc_id1 = response.json().get("doc_id") if response.status_code == 200 else None
     
-    if response.status_code == 200:
-        return response.json().get("doc_id")
-    return None
+    # Test with deep path URL
+    test_doc2 = {
+        "text": "This is another test document about advanced Python features like decorators and generators.",
+        "description": "Advanced Python document",
+        "source_url": "https://docs.python.org/3/library/functions/decorators/advanced-usage",
+        "sitemap_url": "https://example.com/sitemap.xml",
+        "doc_index": 2,
+        "total_docs": 2
+    }
+    
+    response = requests.post(
+        f"{BASE_URL}/documents/text/enhanced",
+        json=test_doc2
+    )
+    
+    print(f"\nDeep path document:")
+    print(f"Status: {response.status_code}")
+    print(f"Response: {json.dumps(response.json(), indent=2)}")
+    
+    return doc_id1
 
 def test_get_documents():
     """Test getting all documents"""
@@ -68,13 +87,15 @@ def test_get_documents():
         data = response.json()
         print(f"Total documents: {data.get('total', 0)}")
         
-        # Show first document if available
+        # Show all documents if available
         if data.get('statuses', {}).get('processed'):
-            first_doc = data['statuses']['processed'][0]
-            print(f"\nFirst document:")
-            print(f"  ID: {first_doc.get('id')}")
-            print(f"  File Path: {first_doc.get('file_path')}")
-            print(f"  Source URL: {first_doc.get('metadata', {}).get('source_url')}")
+            print(f"\nDocuments:")
+            for i, doc in enumerate(data['statuses']['processed'][:5], 1):  # Show first 5
+                print(f"\n  Document {i}:")
+                print(f"    ID: {doc.get('id')}")
+                print(f"    Display Name: {doc.get('display_name')}")
+                print(f"    File Path: {doc.get('file_path')}")
+                print(f"    Source URL: {doc.get('metadata', {}).get('source_url')}")
     else:
         print(f"Error: {response.text}")
     print()
