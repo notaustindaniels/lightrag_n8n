@@ -307,11 +307,28 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                     display_name = url_part
                     doc_id = compute_doc_id(enriched_content)
             else:
-                # The document_id from n8n is already in the format we want to display
+                # The document_id from n8n is already in the format we want
                 file_path = request.document_id
-                display_name = request.document_id
                 # Use the provided document_id as the doc_id to ensure consistency
                 doc_id = request.document_id
+                
+                # Generate display_name to show only the slug/last part
+                if request.document_id.startswith('[') and ']' in request.document_id:
+                    parts = request.document_id.split('] ', 1)
+                    if len(parts) == 2:
+                        domain_part = parts[0] + ']'
+                        path_part = parts[1]
+                        if '/' in path_part:
+                            # Get the last segment of the path
+                            slug = path_part.split('/')[-1]
+                            display_name = f"{domain_part} {slug}"
+                        else:
+                            # Already just a slug
+                            display_name = request.document_id
+                    else:
+                        display_name = request.document_id
+                else:
+                    display_name = request.document_id
             
             # Store the full URL path in metadata for reference
             full_path = None
@@ -336,10 +353,10 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                 # Format: "[domain.com] full/path"
                 if path:
                     file_path = f"[{domain}] {path}"
-                    # For display_name, show only the last part of the path
+                    # For display_name, show only the last part of the path (slug)
                     path_parts = path.split('/')
-                    last_part = path_parts[-1] if path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else path)
-                    display_name = f"[{domain}] {last_part}"
+                    slug = path_parts[-1] if path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else path)
+                    display_name = f"[{domain}] {slug}"
                 else:
                     # For root domain (https://ai.pydantic.dev/)
                     file_path = f"[{domain}]"
@@ -470,8 +487,20 @@ async def get_documents():
                                 
                                 # If no metadata found and doc_id looks like a custom ID, it might be stored differently
                                 if not metadata and doc_id.startswith('[') and ']' in doc_id:
-                                    # This is likely a custom ID, metadata should be here
-                                    metadata = {"file_path": doc_id, "display_name": doc_id}
+                                    # This is likely a custom ID, create proper metadata
+                                    file_path = doc_id
+                                    display_name = doc_id
+                                    
+                                    # Generate proper display_name (slug only)
+                                    parts = doc_id.split('] ', 1)
+                                    if len(parts) == 2:
+                                        domain_part = parts[0] + ']'
+                                        path_part = parts[1]
+                                        if '/' in path_part:
+                                            slug = path_part.split('/')[-1]
+                                            display_name = f"{domain_part} {slug}"
+                                    
+                                    metadata = {"file_path": file_path, "display_name": display_name}
                                 
                                 # If still no metadata, check if this is a hash ID and search for metadata by content
                                 if not metadata and doc_id.startswith('doc-'):
