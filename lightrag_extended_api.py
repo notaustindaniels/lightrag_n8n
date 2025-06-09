@@ -297,14 +297,41 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                             display_name = f"[{domain}]"
                         doc_id = file_path
                     except:
-                        # If parsing fails, just remove [unknown] prefix
-                        file_path = url_part
-                        display_name = url_part
-                        doc_id = compute_doc_id(enriched_content)
+                        # If parsing fails, try to extract domain from the URL string
+                        if url_part.startswith('http://') or url_part.startswith('https://'):
+                            # Try a simpler extraction
+                            try:
+                                # Extract domain from URL string
+                                url_without_protocol = url_part.split('://', 1)[1]
+                                domain = url_without_protocol.split('/', 1)[0].replace('www.', '')
+                                path_part = url_without_protocol.split('/', 1)[1] if '/' in url_without_protocol else ''
+                                
+                                if path_part:
+                                    file_path = f"[{domain}] {path_part}"
+                                    slug = path_part.split('/')[-1] if path_part else 'index'
+                                    display_name = f"[{domain}] {slug}"
+                                else:
+                                    file_path = f"[{domain}]"
+                                    display_name = f"[{domain}]"
+                                doc_id = file_path
+                            except:
+                                # Last resort: use URL as-is but try to make a display name
+                                file_path = url_part
+                                display_name = url_part.split('/')[-1] if '/' in url_part else url_part
+                                doc_id = compute_doc_id(enriched_content)
+                        else:
+                            # Not a URL format we recognize
+                            file_path = url_part
+                            display_name = url_part
+                            doc_id = compute_doc_id(enriched_content)
                 else:
-                    # Just remove the [unknown] prefix
+                    # Just remove the [unknown] prefix, but still try to format nicely
                     file_path = url_part
-                    display_name = url_part
+                    # Try to extract a slug for display
+                    if '/' in url_part:
+                        display_name = url_part.split('/')[-1]
+                    else:
+                        display_name = url_part
                     doc_id = compute_doc_id(enriched_content)
             else:
                 # The document_id from n8n is already in the format we want
@@ -367,8 +394,13 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         
         # Determine which ID to use for LightRAG
         if request.document_id and request.document_id.startswith('[') and ']' in request.document_id:
-            # Use the n8n-provided document_id as the custom ID
-            custom_id = request.document_id
+            # Check if this is an [unknown] format and use the cleaned version
+            if request.document_id.startswith('[unknown] '):
+                # Use the cleaned file_path we generated above as the custom ID
+                custom_id = file_path
+            else:
+                # Use the n8n-provided document_id as the custom ID
+                custom_id = request.document_id
             # IMPORTANT: Use the custom_id as the key for metadata storage
             # This ensures consistency between LightRAG's internal ID and our metadata
             metadata_key = custom_id
