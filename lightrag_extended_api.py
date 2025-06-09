@@ -279,11 +279,39 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         
         # Check if document_id was provided by n8n workflow
         if request.document_id:
-            # The document_id from n8n is already in the format we want to display
-            file_path = request.document_id
-            display_name = request.document_id
-            # Use the provided document_id as the doc_id to ensure consistency
-            doc_id = request.document_id
+            # Check if n8n sent us an [unknown] URL format and fix it
+            if request.document_id.startswith('[unknown] '):
+                # Remove the [unknown] prefix
+                url_part = request.document_id[10:]  # Remove '[unknown] '
+                # Try to create a better ID from the URL
+                if request.source_url:
+                    try:
+                        parsed_url = urlparse(request.source_url)
+                        domain = parsed_url.netloc.replace('www.', '')
+                        path = parsed_url.path.strip('/')
+                        if path:
+                            file_path = f"[{domain}] {path}"
+                            display_name = f"[{domain}] {path.split('/')[-1] if '/' in path else path}"
+                        else:
+                            file_path = f"[{domain}]"
+                            display_name = f"[{domain}]"
+                        doc_id = file_path
+                    except:
+                        # If parsing fails, just remove [unknown] prefix
+                        file_path = url_part
+                        display_name = url_part
+                        doc_id = compute_doc_id(enriched_content)
+                else:
+                    # Just remove the [unknown] prefix
+                    file_path = url_part
+                    display_name = url_part
+                    doc_id = compute_doc_id(enriched_content)
+            else:
+                # The document_id from n8n is already in the format we want to display
+                file_path = request.document_id
+                display_name = request.document_id
+                # Use the provided document_id as the doc_id to ensure consistency
+                doc_id = request.document_id
             
             # Store the full URL path in metadata for reference
             full_path = None
@@ -465,9 +493,20 @@ async def get_documents():
                                 if doc_id.startswith('[') and ']' in doc_id:
                                     # This document is using a custom ID in the correct format
                                     display_id = doc_id
+                                elif file_path and file_path.startswith('[') and ']' in file_path:
+                                    # Use file_path as display ID if it's in the correct format
+                                    display_id = file_path
                                 else:
                                     # Check if we have a better ID in metadata
                                     display_id = metadata.get('id', doc_id)
+                                
+                                # IMPORTANT: Never return a URL as the ID
+                                # If display_id looks like a URL, use the file_path or doc_id instead
+                                if display_id and ('http://' in display_id or 'https://' in display_id):
+                                    if file_path and file_path.startswith('['):
+                                        display_id = file_path
+                                    else:
+                                        display_id = doc_id
                                 
                                 documents.append({
                                     "id": display_id,  # This is what the WebUI displays
@@ -579,6 +618,13 @@ async def get_documents():
                 
                 # Use file_path as the display ID if it's in the proper format
                 display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
+                
+                # IMPORTANT: Never return a URL as the ID
+                if display_id and ('http://' in display_id or 'https://' in display_id):
+                    if file_path and file_path.startswith('['):
+                        display_id = file_path
+                    else:
+                        display_id = doc_id
                 
                 documents.append({
                     "id": display_id,  # This is what the WebUI displays
