@@ -735,30 +735,58 @@ async def delete_documents_by_sitemap(sitemap_url: str):
     try:
         # Find all documents with this sitemap URL
         docs_to_delete = []
+        metadata_keys_to_delete = []
+        
         for doc_id, metadata in metadata_store.items():
             # Check both sitemap_identifier (legacy) and sitemap_url
             if (metadata.get('sitemap_url') == sitemap_url or 
                 metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
-                docs_to_delete.append(doc_id)
+                # The doc_id in metadata_store is the key, but LightRAG might be using custom_id
+                # Check if this document was inserted with a custom ID
+                metadata_keys_to_delete.append(doc_id)
+                
+                # For LightRAG deletion, we need to use the actual ID that LightRAG is using
+                # This could be the doc_id itself (if it's a custom ID like [domain] path)
+                # or it could be in the metadata
+                if doc_id.startswith('[') and ']' in doc_id:
+                    # This is likely the custom ID used by LightRAG
+                    docs_to_delete.append(doc_id)
+                else:
+                    # Check if there's an original_doc_id that might be the hash ID
+                    original_id = metadata.get('original_doc_id', doc_id)
+                    docs_to_delete.append(original_id)
+                    # Also try the file_path as it might be the custom ID
+                    file_path = metadata.get('file_path')
+                    if file_path and file_path != original_id:
+                        docs_to_delete.append(file_path)
         
         if docs_to_delete:
+            # Remove duplicates from docs_to_delete
+            unique_docs_to_delete = list(set(docs_to_delete))
+            
+            print(f"Deleting documents for sitemap {sitemap_url}")
+            print(f"Document IDs to delete from LightRAG: {unique_docs_to_delete}")
+            print(f"Metadata keys to delete: {metadata_keys_to_delete}")
+            
             # First clean up all document traces from LightRAG storages
-            await cleanup_all_document_traces(docs_to_delete)
+            await cleanup_all_document_traces(unique_docs_to_delete)
             
             # Then call the standard delete method
-            await rag_instance.adelete_by_doc_id(docs_to_delete)
+            await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
             
-            # Remove from metadata store
-            for doc_id in docs_to_delete:
-                del metadata_store[doc_id]
+            # Remove from metadata store using the correct keys
+            for key in metadata_keys_to_delete:
+                if key in metadata_store:
+                    del metadata_store[key]
             
             # Save updated metadata
             save_metadata_store()
         
         return {
             "status": "success",
-            "message": f"Deleted {len(docs_to_delete)} documents for sitemap {sitemap_url}",
-            "deleted_count": len(docs_to_delete),
+            "message": f"Deleted {len(metadata_keys_to_delete)} documents for sitemap {sitemap_url}",
+            "deleted_count": len(metadata_keys_to_delete),
+            "deleted_ids": unique_docs_to_delete if 'unique_docs_to_delete' in locals() else [],
             "sitemap_url": sitemap_url
         }
         
