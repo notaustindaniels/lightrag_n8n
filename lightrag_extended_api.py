@@ -85,17 +85,8 @@ def save_metadata_store():
 def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
     """Generate a display name from a file path for legacy documents"""
     if "[" in file_path and "]" in file_path:
-        parts = file_path.split("] ", 1)
-        if len(parts) == 2:
-            domain_part = parts[0] + "]"
-            path_part = parts[1]
-            if "/" in path_part:
-                last_part = path_part.split("/")[-1]
-                return f"{domain_part} {last_part}"
-            else:
-                return file_path
-        else:
-            return file_path
+        # Return the full file_path as display_name (includes domain and full path)
+        return file_path
     else:
         return f"text/{doc_id[:8]}..."
 
@@ -291,7 +282,7 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                         path = parsed_url.path.strip('/')
                         if path:
                             file_path = f"[{domain}] {path}"
-                            display_name = f"[{domain}] {path.split('/')[-1] if '/' in path else path}"
+                            display_name = f"[{domain}] {path}"  # Show full path, not just slug
                         else:
                             file_path = f"[{domain}]"
                             display_name = f"[{domain}]"
@@ -308,8 +299,7 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                                 
                                 if path_part:
                                     file_path = f"[{domain}] {path_part}"
-                                    slug = path_part.split('/')[-1] if path_part else 'index'
-                                    display_name = f"[{domain}] {slug}"
+                                    display_name = f"[{domain}] {path_part}"  # Show full path
                                 else:
                                     file_path = f"[{domain}]"
                                     display_name = f"[{domain}]"
@@ -339,23 +329,8 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                 # Use the provided document_id as the doc_id to ensure consistency
                 doc_id = request.document_id
                 
-                # Generate display_name to show only the slug/last part
-                if request.document_id.startswith('[') and ']' in request.document_id:
-                    parts = request.document_id.split('] ', 1)
-                    if len(parts) == 2:
-                        domain_part = parts[0] + ']'
-                        path_part = parts[1]
-                        if '/' in path_part:
-                            # Get the last segment of the path
-                            slug = path_part.split('/')[-1]
-                            display_name = f"{domain_part} {slug}"
-                        else:
-                            # Already just a slug
-                            display_name = request.document_id
-                    else:
-                        display_name = request.document_id
-                else:
-                    display_name = request.document_id
+                # Use the full path for display_name
+                display_name = request.document_id  # Show full path with domain
             
             # Store the full URL path in metadata for reference
             full_path = None
@@ -380,10 +355,8 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                 # Format: "[domain.com] full/path"
                 if path:
                     file_path = f"[{domain}] {path}"
-                    # For display_name, show only the last part of the path (slug)
-                    path_parts = path.split('/')
-                    slug = path_parts[-1] if path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else path)
-                    display_name = f"[{domain}] {slug}"
+                    # For display_name, show the full path
+                    display_name = f"[{domain}] {path}"
                 else:
                     # For root domain (https://ai.pydantic.dev/)
                     file_path = f"[{domain}]"
@@ -523,14 +496,8 @@ async def get_documents():
                                     file_path = doc_id
                                     display_name = doc_id
                                     
-                                    # Generate proper display_name (slug only)
-                                    parts = doc_id.split('] ', 1)
-                                    if len(parts) == 2:
-                                        domain_part = parts[0] + ']'
-                                        path_part = parts[1]
-                                        if '/' in path_part:
-                                            slug = path_part.split('/')[-1]
-                                            display_name = f"{domain_part} {slug}"
+                                    # Use full path for display_name
+                                    display_name = file_path  # Shows [domain] full_path
                                     
                                     metadata = {"file_path": file_path, "display_name": display_name}
                                 
