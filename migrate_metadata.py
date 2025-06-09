@@ -67,6 +67,10 @@ def migrate_metadata(metadata_file_path):
             doc_metadata['display_name'] = generate_display_name_from_file_path(file_path, doc_id)
             display_name_count += 1
             print(f"Added display_name for {doc_id}: {doc_metadata['display_name']}")
+        
+        # Add original_doc_id for hash-based IDs to support new custom ID system
+        if 'original_doc_id' not in doc_metadata and doc_id.startswith('doc-'):
+            doc_metadata['original_doc_id'] = doc_id
     
     # Save updated metadata
     backup_path = metadata_file_path + '.backup'

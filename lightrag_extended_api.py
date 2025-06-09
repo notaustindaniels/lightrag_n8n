@@ -277,14 +277,13 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         else:
             enriched_content = request.text
         
-        # Compute document ID
-        doc_id = compute_doc_id(enriched_content)
-        
         # Check if document_id was provided by n8n workflow
         if request.document_id:
             # The document_id from n8n is already in the format we want to display
             file_path = request.document_id
             display_name = request.document_id
+            # Use the provided document_id as the doc_id to ensure consistency
+            doc_id = request.document_id
             
             # Store the full URL path in metadata for reference
             full_path = None
@@ -294,6 +293,9 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                 path = parsed_url.path.strip('/')
                 full_path = f"[{domain}] {path}" if path else f"[{domain}]"
         else:
+            # Compute document ID
+            doc_id = compute_doc_id(enriched_content)
+            
             # Create file path based on source URL (actual page) for better visibility
             display_name = None
             if request.source_url:
@@ -318,9 +320,22 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                 file_path = f"text/{doc_id}.txt"
                 display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
         
-        # Store metadata
+        # Determine which ID to use for LightRAG
+        if request.document_id and request.document_id.startswith('[') and ']' in request.document_id:
+            # Use the n8n-provided document_id as the custom ID
+            custom_id = request.document_id
+            # IMPORTANT: Use the custom_id as the key for metadata storage
+            # This ensures consistency between LightRAG's internal ID and our metadata
+            metadata_key = custom_id
+        else:
+            # Use the computed hash ID
+            custom_id = doc_id
+            metadata_key = doc_id
+        
+        # Store metadata with the correct key
         metadata_entry = {
-            "id": doc_id,
+            "id": metadata_key,
+            "original_doc_id": doc_id,  # Keep the hash ID for reference
             "file_path": file_path,
             "display_name": display_name,
             "source_url": request.source_url,
@@ -336,16 +351,16 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         if request.document_id and 'full_path' in locals():
             metadata_entry["full_path"] = full_path
             
-        metadata_store[doc_id] = metadata_entry
+        metadata_store[metadata_key] = metadata_entry
         
         # Save metadata after each insert
         save_metadata_store()
         
-        # Insert into LightRAG with file path
-        await rag_instance.ainsert(enriched_content, file_paths=[file_path])
+        # Insert into LightRAG with custom ID
+        await rag_instance.ainsert(enriched_content, ids=[custom_id], file_paths=[file_path])
         
         # Log for debugging
-        print(f"Document inserted - ID: {doc_id}, file_path: {file_path}, document_id from n8n: {request.document_id}")
+        print(f"Document inserted - Internal ID: {doc_id}, Custom ID: {custom_id}, file_path: {file_path}")
         
         return {
             "status": "success",
@@ -419,8 +434,24 @@ async def get_documents():
                         all_docs = await doc_status_storage.get_all()
                         if all_docs:
                             for doc_id, doc_data in all_docs.items():
-                                # Get metadata from our store
+                                # CRITICAL: The doc_id here is whatever ID LightRAG is using internally
+                                # This could be either our custom ID or a hash ID
+                                
+                                # Try to get metadata using the doc_id first
                                 metadata = metadata_store.get(doc_id, {})
+                                
+                                # If no metadata found and doc_id looks like a custom ID, it might be stored differently
+                                if not metadata and doc_id.startswith('[') and ']' in doc_id:
+                                    # This is likely a custom ID, metadata should be here
+                                    metadata = {"file_path": doc_id, "display_name": doc_id}
+                                
+                                # If still no metadata, check if this is a hash ID and search for metadata by content
+                                if not metadata and doc_id.startswith('doc-'):
+                                    # Search through metadata store for entries with this original_doc_id
+                                    for key, meta in metadata_store.items():
+                                        if meta.get('original_doc_id') == doc_id:
+                                            metadata = meta
+                                            break
                                 
                                 # Ensure file_path exists
                                 file_path = metadata.get('file_path', doc_data.get('file_path', f"text/{doc_id}.txt"))
@@ -430,8 +461,13 @@ async def get_documents():
                                 if not display_name:
                                     display_name = generate_display_name_from_file_path(file_path, doc_id)
                                 
-                                # Use file_path as the display ID if it's in the proper format
-                                display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
+                                # For display, if doc_id is already in the correct format, use it
+                                if doc_id.startswith('[') and ']' in doc_id:
+                                    # This document is using a custom ID in the correct format
+                                    display_id = doc_id
+                                else:
+                                    # Check if we have a better ID in metadata
+                                    display_id = metadata.get('id', doc_id)
                                 
                                 documents.append({
                                     "id": display_id,  # This is what the WebUI displays
@@ -615,9 +651,17 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
         # Remove from metadata store
         deleted_count = 0
         for doc_id in request.doc_ids:
+            # Try direct key first
             if doc_id in metadata_store:
                 del metadata_store[doc_id]
                 deleted_count += 1
+            else:
+                # Also check if this is an original_doc_id
+                for key in list(metadata_store.keys()):
+                    if metadata_store[key].get('original_doc_id') == doc_id:
+                        del metadata_store[key]
+                        deleted_count += 1
+                        break
         
         # Save updated metadata
         save_metadata_store()
