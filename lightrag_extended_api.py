@@ -512,10 +512,13 @@ async def get_documents():
                                 # Ensure file_path exists
                                 file_path = metadata.get('file_path', doc_data.get('file_path', f"text/{doc_id}.txt"))
                                 
-                                # Handle legacy documents without display_name
-                                display_name = metadata.get('display_name')
-                                if not display_name:
-                                    display_name = generate_display_name_from_file_path(file_path, doc_id)
+                                # ALWAYS ensure display_name shows full path
+                                display_name = metadata.get('display_name', file_path)
+                                # Force full path display even if metadata has old format
+                                if display_name and "[" in display_name and "]" in display_name:
+                                    # If it looks like [domain] something, ensure it's the full path
+                                    if file_path and file_path.startswith('[') and file_path != display_name:
+                                        display_name = file_path
                                 
                                 # For display, if doc_id is already in the correct format, use it
                                 if doc_id.startswith('[') and ']' in doc_id:
@@ -559,10 +562,13 @@ async def get_documents():
                                 # Ensure file_path exists
                                 file_path = metadata.get('file_path', f"text/{doc_id}.txt")
                                 
-                                # Handle legacy documents without display_name
-                                display_name = metadata.get('display_name')
-                                if not display_name:
-                                    display_name = generate_display_name_from_file_path(file_path, doc_id)
+                                # ALWAYS ensure display_name shows full path
+                                display_name = metadata.get('display_name', file_path)
+                                # Force full path display even if metadata has old format
+                                if display_name and "[" in display_name and "]" in display_name:
+                                    # If it looks like [domain] something, ensure it's the full path
+                                    if file_path and file_path.startswith('[') and file_path != display_name:
+                                        display_name = file_path
                                 
                                 documents.append({
                                     "id": doc_id,
@@ -592,21 +598,8 @@ async def get_documents():
                                     # Handle legacy documents without display_name
                                     display_name = metadata.get('display_name')
                                     if not display_name:
-                                        # Generate display_name from file_path for legacy documents
-                                        if "[" in file_path and "]" in file_path:
-                                            parts = file_path.split("] ", 1)
-                                            if len(parts) == 2:
-                                                domain_part = parts[0] + "]"
-                                                path_part = parts[1]
-                                                if "/" in path_part:
-                                                    last_part = path_part.split("/")[-1]
-                                                    display_name = f"{domain_part} {last_part}"
-                                                else:
-                                                    display_name = file_path
-                                            else:
-                                                display_name = file_path
-                                        else:
-                                            display_name = f"text/{doc_id[:8]}..."
+                                        # FORCE display_name to show full path
+                                        display_name = file_path  # This will show [domain] full/path
                                     
                                     documents.append({
                                         "id": doc_id,
@@ -628,21 +621,8 @@ async def get_documents():
                 
                 # Handle legacy documents without display_name
                 if not display_name:
-                    # Generate display_name from file_path for legacy documents
-                    if "[" in file_path and "]" in file_path:
-                        parts = file_path.split("] ", 1)
-                        if len(parts) == 2:
-                            domain_part = parts[0] + "]"
-                            path_part = parts[1]
-                            if "/" in path_part:
-                                last_part = path_part.split("/")[-1]
-                                display_name = f"{domain_part} {last_part}"
-                            else:
-                                display_name = file_path
-                        else:
-                            display_name = file_path
-                    else:
-                        display_name = f"text/{doc_id[:8]}..."
+                    # FORCE display_name to show full path, not just slug
+                    display_name = file_path  # This will show [domain] full/path
                 
                 # Use file_path as the display ID if it's in the proper format
                 display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
