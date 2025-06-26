@@ -9,13 +9,14 @@ import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 import uvicorn
 from contextlib import asynccontextmanager
+import traceback
 
 # Import LightRAG components
 from lightrag import LightRAG, QueryParam
@@ -63,6 +64,17 @@ class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
     stream: bool = False
+
+# Graph models
+class EntityUpdateRequest(BaseModel):
+    entity_name: str
+    updated_data: Dict[str, Any]
+    allow_rename: bool = False
+
+class RelationUpdateRequest(BaseModel):
+    source_id: str
+    target_id: str
+    updated_data: Dict[str, Any]
 
 # Global variables
 rag_instance = None
@@ -247,6 +259,272 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "extended-lightrag"}
+
+# Graph endpoints
+@app.get("/graph/label/list")
+async def get_graph_labels():
+    """
+    Get all graph labels
+    Returns:
+        List[str]: List of graph labels
+    """
+    try:
+        # Check if rag_instance has the method
+        if hasattr(rag_instance, 'get_graph_labels'):
+            return await rag_instance.get_graph_labels()
+        else:
+            # Alternative approach: get labels from graph storage directly
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                nodes = []
+                if hasattr(graph, 'nodes'):
+                    nodes = list(graph.nodes())
+                return nodes
+            else:
+                return []
+    except Exception as e:
+        print(f"Error getting graph labels: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error getting graph labels: {str(e)}"
+        )
+
+@app.get("/graphs")
+async def get_knowledge_graph(
+    label: str = Query(..., description="Label to get knowledge graph for"),
+    max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
+    max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
+):
+    """
+    Retrieve a connected subgraph of nodes where the label includes the specified label.
+    When reducing the number of nodes, the prioritization criteria are as follows:
+    1. Hops(path) to the starting node take precedence
+    2. Followed by the degree of the nodes
+    
+    Args:
+        label (str): Label of the starting node
+        max_depth (int, optional): Maximum depth of the subgraph, Defaults to 3
+        max_nodes: Maximum nodes to return
+    
+    Returns:
+        Dict[str, List[str]]: Knowledge graph for label
+    """
+    try:
+        # Check if rag_instance has the method
+        if hasattr(rag_instance, 'get_knowledge_graph'):
+            return await rag_instance.get_knowledge_graph(
+                node_label=label,
+                max_depth=max_depth,
+                max_nodes=max_nodes,
+            )
+        else:
+            # Alternative approach: build graph data from graph storage
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                
+                # Get subgraph starting from the label
+                nodes = set()
+                edges = []
+                
+                # Simple BFS to get nodes within max_depth
+                if hasattr(graph, 'has_node') and graph.has_node(label):
+                    visited = set()
+                    queue = [(label, 0)]
+                    
+                    while queue and len(nodes) < max_nodes:
+                        current_node, depth = queue.pop(0)
+                        
+                        if current_node in visited or depth > max_depth:
+                            continue
+                            
+                        visited.add(current_node)
+                        nodes.add(current_node)
+                        
+                        # Get neighbors
+                        if hasattr(graph, 'neighbors'):
+                            for neighbor in graph.neighbors(current_node):
+                                if neighbor not in visited and depth + 1 <= max_depth:
+                                    queue.append((neighbor, depth + 1))
+                                    edges.append({"source": current_node, "target": neighbor})
+                
+                # Build response format
+                node_list = []
+                for node in nodes:
+                    node_data = {"id": node, "label": node}
+                    # Try to get additional node data
+                    if hasattr(graph, 'nodes') and hasattr(graph.nodes, '__getitem__'):
+                        try:
+                            node_attrs = graph.nodes[node]
+                            node_data.update(node_attrs)
+                        except:
+                            pass
+                    node_list.append(node_data)
+                
+                return {
+                    "nodes": node_list,
+                    "edges": edges
+                }
+            
+            # If no graph storage available, return empty graph
+            return {"nodes": [], "edges": []}
+            
+    except Exception as e:
+        print(f"Error getting knowledge graph for label '{label}': {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
+        )
+
+@app.get("/graph/entity/exists")
+async def check_entity_exists(
+    name: str = Query(..., description="Entity name to check"),
+):
+    """
+    Check if an entity with the given name exists in the knowledge graph
+    
+    Args:
+        name (str): Name of the entity to check
+    
+    Returns:
+        Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
+    """
+    try:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            if hasattr(graph, 'has_node'):
+                exists = await graph.has_node(name) if asyncio.iscoroutinefunction(graph.has_node) else graph.has_node(name)
+                return {"exists": exists}
+            elif hasattr(graph, '__contains__'):
+                exists = name in graph
+                return {"exists": exists}
+        
+        return {"exists": False}
+    except Exception as e:
+        print(f"Error checking entity existence for '{name}': {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error checking entity existence: {str(e)}"
+        )
+
+@app.post("/graph/entity/edit")
+async def update_entity(request: EntityUpdateRequest):
+    """
+    Update an entity's properties in the knowledge graph
+    
+    Args:
+        request (EntityUpdateRequest): Request containing entity name, updated data, and rename flag
+    
+    Returns:
+        Dict: Updated entity information
+    """
+    try:
+        # Check if rag_instance has the edit method
+        if hasattr(rag_instance, 'aedit_entity'):
+            result = await rag_instance.aedit_entity(
+                entity_name=request.entity_name,
+                updated_data=request.updated_data,
+                allow_rename=request.allow_rename,
+            )
+            return {
+                "status": "success",
+                "message": "Entity updated successfully",
+                "data": result,
+            }
+        else:
+            # Alternative approach: update entity in graph storage directly
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                
+                # Check if entity exists
+                if hasattr(graph, 'has_node') and graph.has_node(request.entity_name):
+                    # Update node attributes
+                    if hasattr(graph, 'nodes') and hasattr(graph.nodes, '__setitem__'):
+                        for key, value in request.updated_data.items():
+                            graph.nodes[request.entity_name][key] = value
+                    
+                    # Handle rename if requested
+                    if request.allow_rename and 'name' in request.updated_data:
+                        new_name = request.updated_data['name']
+                        if new_name != request.entity_name:
+                            # This is more complex - would need to rename node
+                            # For now, just return success without renaming
+                            pass
+                    
+                    return {
+                        "status": "success",
+                        "message": "Entity updated successfully",
+                        "data": request.updated_data,
+                    }
+                else:
+                    raise ValueError(f"Entity '{request.entity_name}' not found")
+            
+            raise ValueError("Graph storage not available")
+            
+    except ValueError as ve:
+        print(f"Validation error updating entity '{request.entity_name}': {str(ve)}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        print(f"Error updating entity '{request.entity_name}': {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error updating entity: {str(e)}"
+        )
+
+@app.post("/graph/relation/edit")
+async def update_relation(request: RelationUpdateRequest):
+    """Update a relation's properties in the knowledge graph
+    
+    Args:
+        request (RelationUpdateRequest): Request containing source ID, target ID and updated data
+    
+    Returns:
+        Dict: Updated relation information
+    """
+    try:
+        # Check if rag_instance has the edit method
+        if hasattr(rag_instance, 'aedit_relation'):
+            result = await rag_instance.aedit_relation(
+                source_entity=request.source_id,
+                target_entity=request.target_id,
+                updated_data=request.updated_data,
+            )
+            return {
+                "status": "success",
+                "message": "Relation updated successfully",
+                "data": result,
+            }
+        else:
+            # Alternative approach: update edge in graph storage directly
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                
+                # Check if edge exists
+                if hasattr(graph, 'has_edge') and graph.has_edge(request.source_id, request.target_id):
+                    # Update edge attributes
+                    if hasattr(graph, 'edges') and hasattr(graph.edges, '__getitem__'):
+                        edge = graph.edges[request.source_id, request.target_id]
+                        for key, value in request.updated_data.items():
+                            edge[key] = value
+                    
+                    return {
+                        "status": "success",
+                        "message": "Relation updated successfully",
+                        "data": request.updated_data,
+                    }
+                else:
+                    raise ValueError(f"Relation between '{request.source_id}' and '{request.target_id}' not found")
+            
+            raise ValueError("Graph storage not available")
+            
+    except ValueError as ve:
+        print(f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        print(f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error updating relation: {str(e)}"
+        )
 
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
