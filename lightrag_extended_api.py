@@ -120,9 +120,6 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
                     domain_part = parts[0] + ']'
                     all_doc_id_patterns.add(domain_part)
         
-        # Get working directory for file operations
-        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        
         # 1. Delete from vector storage (chunks, entities, relationships)
         deleted_vectors = 0
         if hasattr(rag_instance, 'chunks_vdb') and rag_instance.chunks_vdb:
@@ -144,6 +141,9 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
         if hasattr(rag_instance, 'entities_vdb') and rag_instance.entities_vdb:
             try:
                 print("Cleaning entities from vector storage...")
+                # Query all entities (this is inefficient but necessary without better filtering)
+                # In production, you'd want to implement a more efficient method
+                
                 # Check if we can query by metadata
                 entities_to_delete = []
                 
@@ -296,29 +296,6 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
                                 deleted_entities += 1
                             except:
                                 pass
-                    
-                    # CRITICAL: Save the updated graph to GraphML file
-                    graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
-                    try:
-                        nx.write_graphml(graph, graphml_path)
-                        print(f"Saved updated graph to {graphml_path}")
-                    except Exception as e:
-                        print(f"Error saving graph to GraphML: {e}")
-                    
-                    # Also try using the storage's save methods
-                    if hasattr(rag_instance.graph_storage, 'save'):
-                        try:
-                            await rag_instance.graph_storage.save()
-                            print("Saved using graph_storage.save()")
-                        except Exception as e:
-                            print(f"Error with graph_storage.save(): {e}")
-                    
-                    if hasattr(rag_instance.graph_storage, '_save'):
-                        try:
-                            rag_instance.graph_storage._save()
-                            print("Saved using graph_storage._save()")
-                        except Exception as e:
-                            print(f"Error with graph_storage._save(): {e}")
                 
                 # Neo4J or PostgreSQL storage
                 elif hasattr(graph, 'query') or hasattr(graph, 'execute'):
@@ -369,92 +346,106 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
                 
                 print(f"Graph cleanup completed. Deleted {deleted_entities} entities and {deleted_relationships} relationships")
                 
+                # CRITICAL: Save the modified graph to disk so WebUI can see the changes
+                working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                
+                # Save the graph using NetworkX
+                try:
+                    nx.write_graphml(graph, graphml_path)
+                    print(f"Saved updated graph to {graphml_path}")
+                except Exception as e:
+                    print(f"Error saving graph with NetworkX: {e}")
+                
+                # Also try to save using the storage's save method
+                if hasattr(rag_instance.graph_storage, 'save'):
+                    try:
+                        await rag_instance.graph_storage.save()
+                        print("Saved graph using graph_storage.save()")
+                    except Exception as e:
+                        print(f"Error with graph_storage.save(): {e}")
+                
+                # If the storage has a sync save method, try that too
+                if hasattr(rag_instance.graph_storage, '_save'):
+                    try:
+                        rag_instance.graph_storage._save()
+                        print("Saved graph using graph_storage._save()")
+                    except Exception as e:
+                        print(f"Error with graph_storage._save(): {e}")
+                
             except Exception as e:
                 print(f"Error with graph storage cleanup: {e}")
                 import traceback
                 traceback.print_exc()
         
-        # 7. CRITICAL: Update vector database JSON files directly
-        # This is what the WebUI reads from
-        print("Updating vector database JSON files...")
-        vector_db_files = [
-            ("vdb_entities.json", "entity"),
-            ("vdb_relationships.json", "relationship"),
-            ("vdb_chunks.json", "chunk")
-        ]
+        # 7. Clear and update vector database JSON files (critical for WebUI)
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
         
-        for file_name, db_type in vector_db_files:
-            file_path = os.path.join(working_dir, file_name)
-            if os.path.exists(file_path):
+        # Handle vector database files
+        vdb_files = {
+            "vdb_entities.json": entities_to_delete if 'entities_to_delete' in locals() else set(),
+            "vdb_relationships.json": relationships_to_delete if 'relationships_to_delete' in locals() else set(),
+            "vdb_chunks.json": all_doc_id_patterns
+        }
+        
+        for vdb_file, items_to_remove in vdb_files.items():
+            vdb_path = os.path.join(working_dir, vdb_file)
+            if os.path.exists(vdb_path) and items_to_remove:
                 try:
-                    # Read the current data
-                    with open(file_path, 'r') as f:
+                    with open(vdb_path, 'r') as f:
                         vdb_data = json.load(f)
                     
                     if 'data' in vdb_data and isinstance(vdb_data['data'], list):
                         original_count = len(vdb_data['data'])
-                        filtered_data = []
                         
                         # Filter out entries related to deleted documents
-                        for entry in vdb_data['data']:
-                            should_keep = True
-                            
-                            # Check various fields that might contain document references
-                            if isinstance(entry, dict):
-                                # Check source_id
+                        if vdb_file == "vdb_entities.json":
+                            # Remove entities by ID
+                            vdb_data['data'] = [
+                                entry for entry in vdb_data['data'] 
+                                if entry.get('id') not in items_to_remove
+                            ]
+                        elif vdb_file == "vdb_relationships.json":
+                            # Remove relationships by source/target pairs
+                            vdb_data['data'] = [
+                                entry for entry in vdb_data['data']
+                                if (entry.get('source'), entry.get('target')) not in items_to_remove
+                            ]
+                        elif vdb_file == "vdb_chunks.json":
+                            # Remove chunks by document ID patterns
+                            filtered_data = []
+                            for entry in vdb_data['data']:
+                                doc_id = entry.get('doc_id', '')
                                 source_id = entry.get('source_id', '')
-                                if source_id:
-                                    for doc_id in all_doc_id_patterns:
-                                        if (doc_id in source_id or 
-                                            source_id.startswith(f"chunk-{doc_id}") or
-                                            f"chunk|||{doc_id}" in source_id):
-                                            should_keep = False
-                                            break
+                                should_keep = True
                                 
-                                # Check file_path
+                                for pattern in items_to_remove:
+                                    if (doc_id == pattern or 
+                                        pattern in doc_id or
+                                        source_id == pattern or
+                                        pattern in source_id):
+                                        should_keep = False
+                                        break
+                                
                                 if should_keep:
-                                    file_path_field = entry.get('file_path', '')
-                                    if file_path_field:
-                                        for doc_id in all_doc_id_patterns:
-                                            if doc_id in file_path_field:
-                                                should_keep = False
-                                                break
-                                
-                                # Check content or other fields that might contain doc references
-                                if should_keep and db_type == "chunk":
-                                    content = entry.get('content', '')
-                                    for doc_id in all_doc_id_patterns:
-                                        if doc_id in content:
-                                            should_keep = False
-                                            break
+                                    filtered_data.append(entry)
                             
-                            if should_keep:
-                                filtered_data.append(entry)
+                            vdb_data['data'] = filtered_data
                         
-                        # Update the data
-                        vdb_data['data'] = filtered_data
+                        # Update the matrix if it exists (for embeddings)
+                        if 'matrix' in vdb_data and len(vdb_data['data']) != original_count:
+                            # Clear the matrix - it will be rebuilt when needed
+                            vdb_data['matrix'] = []
                         
-                        # Update the matrix if it exists (should match data length)
-                        if 'matrix' in vdb_data and isinstance(vdb_data['matrix'], list):
-                            # The matrix should have the same number of rows as data entries
-                            if len(vdb_data['matrix']) == original_count:
-                                # We need to filter the matrix rows to match the filtered data
-                                # This is tricky without knowing which rows correspond to which data
-                                # For safety, we'll clear the matrix and let LightRAG rebuild it
-                                vdb_data['matrix'] = []
-                                print(f"Cleared matrix for {file_name} - will be rebuilt on next use")
-                        
-                        # Write the updated data back
-                        with open(file_path, 'w') as f:
+                        # Save the updated file
+                        with open(vdb_path, 'w') as f:
                             json.dump(vdb_data, f, indent=2)
                         
-                        removed_count = original_count - len(filtered_data)
-                        print(f"Updated {file_name}: removed {removed_count} entries")
-                    
+                        removed_count = original_count - len(vdb_data['data'])
+                        print(f"Updated {vdb_file}: removed {removed_count} entries")
+                        
                 except Exception as e:
-                    print(f"Error updating {file_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"Error updating {vdb_file}: {e}")
         
         # 8. Clear LLM response cache
         if hasattr(rag_instance, 'llm_response_cache'):
@@ -473,12 +464,32 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
         except Exception as e:
             print(f"Error with built-in delete method: {e}")
         
+        # 10. Final save attempt to ensure all changes are persisted
+        try:
+            # Force save all storages
+            if hasattr(rag_instance, 'graph_storage'):
+                if hasattr(rag_instance.graph_storage, 'save'):
+                    await rag_instance.graph_storage.save()
+                elif hasattr(rag_instance.graph_storage, '_save'):
+                    rag_instance.graph_storage._save()
+            
+            # Save the graph one more time to be absolutely sure
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                nx.write_graphml(graph, graphml_path)
+                print(f"Final save of graph to {graphml_path}")
+                
+        except Exception as e:
+            print(f"Error in final save attempt: {e}")
+        
         print(f"Cleanup completed. Summary:")
         print(f"  - Deleted {deleted_vectors} vector entries")
         print(f"  - Deleted {deleted_kvs} KV entries")
         print(f"  - Deleted {deleted_entities} graph entities")
         print(f"  - Deleted {deleted_relationships} graph relationships")
         print(f"  - Updated vector database JSON files")
+        print(f"  - Saved changes to GraphML file")
         
     except Exception as e:
         print(f"Critical error in cleanup_all_document_traces: {e}")
