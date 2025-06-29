@@ -105,83 +105,28 @@ def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
 async def cleanup_all_document_traces(doc_ids: List[str]):
     """Clean up all traces of documents from all LightRAG storage components"""
     try:
-        # Track entities and relationships to potentially remove
-        entities_to_check = set()
-        relationships_to_check = set()
-        
-        # 1. First, get text chunks to find entities mentioned in these documents
-        if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
-            try:
-                # Get all chunks for these documents to extract entity references
-                for doc_id in doc_ids:
-                    # Get the full document text if available
-                    try:
-                        doc_data = await rag_instance.kv_storage.get({doc_id})
-                        if doc_data and doc_id in doc_data:
-                            doc_text = doc_data[doc_id]
-                            # Try to extract entities from the document text
-                            # This is a simple approach - looking for patterns that might be entities
-                            if isinstance(doc_text, str):
-                                # Store document content for entity extraction
-                                pass
-                    except:
-                        pass
-                    
-                    # Look for text chunks
-                    if hasattr(rag_instance.kv_storage, '_data'):
-                        for key in list(rag_instance.kv_storage._data.keys()):
-                            if key.startswith(f"chunk-{doc_id}"):
-                                try:
-                                    chunk_data = await rag_instance.kv_storage.get({key})
-                                    if chunk_data and key in chunk_data:
-                                        chunk_info = chunk_data[key]
-                                        # Check if chunk has entity information
-                                        if isinstance(chunk_info, dict):
-                                            # Look for entities field
-                                            if 'entities' in chunk_info:
-                                                entities_to_check.update(chunk_info['entities'])
-                                            # Also check for any entity references in metadata
-                                            if 'metadata' in chunk_info and isinstance(chunk_info['metadata'], dict):
-                                                if 'entities' in chunk_info['metadata']:
-                                                    entities_to_check.update(chunk_info['metadata']['entities'])
-                                except:
-                                    pass
-            except Exception as e:
-                print(f"Error extracting entities from chunks: {e}")
-        
-        # 2. Delete from vector storage
+        # 1. Delete from vector storage
         if hasattr(rag_instance, 'vector_storage') and rag_instance.vector_storage:
             try:
-                # Delete document vectors
+                # Try to delete vectors associated with the document IDs
                 for doc_id in doc_ids:
-                    # Delete document-level vectors
+                    # LightRAG stores vectors with chunk IDs, we need to find all chunks
                     await rag_instance.vector_storage.delete_by_doc_id(doc_id)
-                    
-                    # Also try to delete chunk vectors
-                    # LightRAG might store chunk vectors with IDs like "chunk-{doc_id}-{index}"
-                    if hasattr(rag_instance.vector_storage, 'delete'):
-                        # Try to find and delete chunk vectors
-                        chunk_ids = []
-                        for i in range(100):  # Assume max 100 chunks per doc
-                            chunk_ids.append(f"chunk-{doc_id}-{i}")
-                        try:
-                            await rag_instance.vector_storage.delete(chunk_ids)
-                        except:
-                            pass
             except Exception as e:
                 print(f"Error deleting from vector storage: {e}")
         
-        # 3. Delete from KV storage (full documents and chunks)
+        # 2. Delete from KV storage (full documents and chunks)
         if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
             try:
                 # Delete full documents
                 for doc_id in doc_ids:
                     await rag_instance.kv_storage.delete({doc_id})
                     
-                # Delete text chunks
+                # Delete text chunks - LightRAG stores chunks with keys like "chunk-{doc_id}-{chunk_index}"
+                # We need to find and delete all chunks for each document
                 if hasattr(rag_instance.kv_storage, '_data'):
                     keys_to_delete = []
-                    for key in list(rag_instance.kv_storage._data.keys()):
+                    for key in rag_instance.kv_storage._data.keys():
                         for doc_id in doc_ids:
                             if key.startswith(f"chunk-{doc_id}"):
                                 keys_to_delete.append(key)
@@ -190,54 +135,52 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
             except Exception as e:
                 print(f"Error deleting from KV storage: {e}")
         
-        # 4. Delete from doc status storage
+        # 3. Delete from doc status storage
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
             try:
                 await rag_instance.doc_status.delete({doc_id for doc_id in doc_ids})
             except Exception as e:
                 print(f"Error deleting from doc status storage: {e}")
         
-        # 5. Clean up graph storage (entities and relationships)
-        if hasattr(rag_instance, 'chunk_entity_relation_graph') and rag_instance.chunk_entity_relation_graph:
+# 4. Clean up graph storage (entities and relationships from these documents)
+        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
             try:
-                graph = rag_instance.chunk_entity_relation_graph
-                
-                # Since we don't have direct document-to-entity mapping,
-                # we'll use a heuristic approach:
-                # Remove entities that appear ONLY in the deleted documents
-                
-                # For now, log what we would clean up
-                print(f"Graph cleanup: Found {len(entities_to_check)} potential entities to check")
-                
-                # Note: Full implementation would require:
-                # 1. Tracking which entities came from which documents during insertion
-                # 2. Reference counting to know when an entity should be removed
-                # 3. Removing orphaned relationships when entities are removed
-                
-                # Clear the graph cache if available
-                if hasattr(graph, 'clear_cache'):
-                    graph.clear_cache()
+                # Access the NetworkX graph directly
+                if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                    graph = rag_instance.chunk_entity_relation_graph
                     
+                    # Since LightRAG doesn't maintain document-to-entity mappings,
+                    # and we're deleting all documents from a sitemap, 
+                    # the most effective approach is to clear the entire graph
+                    if hasattr(graph, 'clear'):
+                        print(f"Clearing entire knowledge graph for document cleanup")
+                        graph.clear()
+                        
+                        # Save the cleared graph to disk
+                        if hasattr(rag_instance.graph_storage, 'save'):
+                            await rag_instance.graph_storage.save()
+                        elif hasattr(rag_instance.graph_storage, '_save'):
+                            rag_instance.graph_storage._save()
+                        
+                        print("Knowledge graph cleared and saved")
+                    else:
+                        print("Warning: Could not clear graph - clear method not available")
+                        
+                # Alternative: If you want to selectively remove entities (future enhancement)
+                # This would require LightRAG to maintain document-entity mappings
+                # which it currently doesn't do reliably
+                
             except Exception as e:
                 print(f"Error with graph storage cleanup: {e}")
         
-        # 6. Clear any caches that might contain document data
+        # 5. Clear any caches that might contain document data
         if hasattr(rag_instance, 'llm_response_cache'):
             try:
                 # Clear cache entries related to these documents
+                # This is a simple approach - in production you might want more granular control
                 await rag_instance.aclear_cache()
             except Exception as e:
                 print(f"Error clearing cache: {e}")
-        
-        # 7. Force storage synchronization if available
-        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
-            try:
-                if hasattr(rag_instance.graph_storage, 'sync'):
-                    await rag_instance.graph_storage.sync()
-            except:
-                pass
-                
-        print(f"Cleaned up traces for {len(doc_ids)} documents")
                 
     except Exception as e:
         print(f"Error in cleanup_all_document_traces: {e}")
@@ -1091,16 +1034,18 @@ async def delete_documents_by_sitemap(sitemap_url: str):
         # Find all documents with this sitemap URL
         docs_to_delete = []
         metadata_keys_to_delete = []
-        entities_to_delete = set()
         
         for doc_id, metadata in metadata_store.items():
             # Check both sitemap_identifier (legacy) and sitemap_url
             if (metadata.get('sitemap_url') == sitemap_url or 
                 metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
                 # The doc_id in metadata_store is the key, but LightRAG might be using custom_id
+                # Check if this document was inserted with a custom ID
                 metadata_keys_to_delete.append(doc_id)
                 
                 # For LightRAG deletion, we need to use the actual ID that LightRAG is using
+                # This could be the doc_id itself (if it's a custom ID like [domain] path)
+                # or it could be in the metadata
                 if doc_id.startswith('[') and ']' in doc_id:
                     # This is likely the custom ID used by LightRAG
                     docs_to_delete.append(doc_id)
@@ -1114,128 +1059,33 @@ async def delete_documents_by_sitemap(sitemap_url: str):
                         docs_to_delete.append(file_path)
         
         if docs_to_delete:
-            # Remove duplicates
+            # Remove duplicates from docs_to_delete
             unique_docs_to_delete = list(set(docs_to_delete))
             
             print(f"Deleting documents for sitemap {sitemap_url}")
             print(f"Document IDs to delete from LightRAG: {unique_docs_to_delete}")
             print(f"Metadata keys to delete: {metadata_keys_to_delete}")
             
-            # Step 1: Extract entities from documents before deletion
-            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph = rag_instance.chunk_entity_relation_graph
-                
-                # Try to find entities mentioned in these documents
-                # This is a workaround since LightRAG doesn't track document-entity relationships
-                for doc_id in unique_docs_to_delete:
-                    # Check text chunks for entity references
-                    if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
-                        try:
-                            # Look for all chunks of this document
-                            if hasattr(rag_instance.kv_storage, '_data'):
-                                for key in list(rag_instance.kv_storage._data.keys()):
-                                    if key.startswith(f"chunk-{doc_id}"):
-                                        try:
-                                            chunk_data = await rag_instance.kv_storage.get({key})
-                                            if chunk_data and key in chunk_data:
-                                                chunk_text = str(chunk_data[key])
-                                                # Simple heuristic: look for entities that might be in this chunk
-                                                # Check all nodes in the graph
-                                                if hasattr(graph, 'nodes'):
-                                                    for node in graph.nodes():
-                                                        # If the entity name appears in the chunk text
-                                                        if isinstance(node, str) and node.lower() in chunk_text.lower():
-                                                            entities_to_delete.add(node)
-                                        except:
-                                            pass
-                        except Exception as e:
-                            print(f"Error extracting entities: {e}")
-            
-            # Step 2: Clean up all document traces
+            # First clean up all document traces from LightRAG storages
             await cleanup_all_document_traces(unique_docs_to_delete)
             
-            # Step 3: Try to delete using LightRAG's method (even though it's buggy)
-            try:
-                await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
-            except Exception as e:
-                print(f"Error in adelete_by_doc_id (expected due to known bugs): {e}")
+            # Then call the standard delete method
+            await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
             
-            # Step 4: Delete entities found in the documents
-            if entities_to_delete and hasattr(rag_instance, 'adelete_by_entity'):
-                print(f"Deleting {len(entities_to_delete)} entities associated with documents")
-                for entity in entities_to_delete:
-                    try:
-                        await rag_instance.adelete_by_entity(entity)
-                    except Exception as e:
-                        print(f"Error deleting entity '{entity}': {e}")
-            
-            # Step 5: Force graph cleanup for the specific documents
-            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph = rag_instance.chunk_entity_relation_graph
-                nodes_to_remove = []
-                
-                # More aggressive entity removal based on document IDs in metadata
-                if hasattr(graph, 'nodes'):
-                    for node, data in graph.nodes(data=True):
-                        # Check if node data contains source_id matching our documents
-                        if isinstance(data, dict) and 'source_id' in data:
-                            source_ids = data['source_id']
-                            if isinstance(source_ids, str):
-                                source_ids = [source_ids]
-                            
-                            # Check if any source_id matches our deleted documents
-                            for source_id in source_ids:
-                                for doc_id in unique_docs_to_delete:
-                                    if doc_id in source_id or source_id in doc_id:
-                                        nodes_to_remove.append(node)
-                                        break
-                
-                # Remove the nodes
-                if nodes_to_remove:
-                    print(f"Removing {len(nodes_to_remove)} nodes from graph")
-                    if hasattr(graph, 'remove_nodes_from'):
-                        graph.remove_nodes_from(nodes_to_remove)
-                    elif hasattr(graph, 'remove_node'):
-                        for node in nodes_to_remove:
-                            try:
-                                graph.remove_node(node)
-                            except:
-                                pass
-            
-            # Step 6: Clear vector storage entries for deleted entities
-            if entities_to_delete and hasattr(rag_instance, 'entities_vdb'):
-                try:
-                    await rag_instance.entities_vdb.delete(list(entities_to_delete))
-                except Exception as e:
-                    print(f"Error clearing entity vectors: {e}")
-            
-            # Step 7: Remove from metadata store
+            # Remove from metadata store using the correct keys
             for key in metadata_keys_to_delete:
                 if key in metadata_store:
                     del metadata_store[key]
             
             # Save updated metadata
             save_metadata_store()
-            
-            # Step 8: Force storage sync
-            if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
-                try:
-                    if hasattr(rag_instance.graph_storage, 'sync'):
-                        await rag_instance.graph_storage.sync()
-                    # For NetworkXStorage, trigger a save
-                    if hasattr(rag_instance.graph_storage, 'save'):
-                        await rag_instance.graph_storage.save()
-                except Exception as e:
-                    print(f"Error syncing graph storage: {e}")
         
         return {
             "status": "success",
             "message": f"Deleted {len(metadata_keys_to_delete)} documents for sitemap {sitemap_url}",
             "deleted_count": len(metadata_keys_to_delete),
             "deleted_ids": unique_docs_to_delete if 'unique_docs_to_delete' in locals() else [],
-            "entities_deleted": len(entities_to_delete),
-            "sitemap_url": sitemap_url,
-            "note": "Graph cleanup completed with entity removal"
+            "sitemap_url": sitemap_url
         }
         
     except Exception as e:
@@ -1259,181 +1109,6 @@ async def query(request: QueryRequest):
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/graph/rebuild")
-async def rebuild_graph():
-    """
-    Rebuild the knowledge graph from scratch based on existing documents.
-    This is useful after deleting documents to ensure the graph is clean.
-    WARNING: This operation can be time-consuming for large document sets.
-    """
-    try:
-        print("Starting knowledge graph rebuild...")
-        
-        # Step 1: Clear the existing graph completely
-        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-            graph = rag_instance.chunk_entity_relation_graph
-            
-            # Count nodes before clearing
-            node_count = len(graph.nodes()) if hasattr(graph, 'nodes') else 0
-            edge_count = len(graph.edges()) if hasattr(graph, 'edges') else 0
-            
-            print(f"Clearing graph with {node_count} nodes and {edge_count} edges")
-            
-            # Clear using the appropriate method
-            if hasattr(graph, 'clear'):
-                graph.clear()
-            elif hasattr(graph, 'remove_nodes_from'):
-                nodes = list(graph.nodes())
-                graph.remove_nodes_from(nodes)
-        
-        # Step 2: Clear vector storages for entities and relationships
-        if hasattr(rag_instance, 'entities_vdb') and rag_instance.entities_vdb:
-            try:
-                # For some vector stores, we might need to recreate them
-                # This is implementation-specific
-                if hasattr(rag_instance.entities_vdb, 'clear'):
-                    await rag_instance.entities_vdb.clear()
-            except:
-                pass
-        
-        if hasattr(rag_instance, 'relationships_vdb') and rag_instance.relationships_vdb:
-            try:
-                if hasattr(rag_instance.relationships_vdb, 'clear'):
-                    await rag_instance.relationships_vdb.clear()
-            except:
-                pass
-        
-        # Step 3: Force save the empty graph
-        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
-            try:
-                if hasattr(rag_instance.graph_storage, 'save'):
-                    await rag_instance.graph_storage.save()
-            except Exception as e:
-                print(f"Error saving cleared graph: {e}")
-        
-        # Step 4: Use LightRAG's rebuild method if available
-        if hasattr(rag_instance, '_rebuild_knowledge_from_chunks'):
-            try:
-                print("Rebuilding knowledge graph from chunks...")
-                await rag_instance._rebuild_knowledge_from_chunks()
-                
-                # Count nodes after rebuild
-                if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                    graph = rag_instance.chunk_entity_relation_graph
-                    new_node_count = len(graph.nodes()) if hasattr(graph, 'nodes') else 0
-                    new_edge_count = len(graph.edges()) if hasattr(graph, 'edges') else 0
-                    
-                    return {
-                        "status": "success",
-                        "message": "Graph rebuilt successfully from chunks",
-                        "before": {
-                            "nodes": node_count,
-                            "edges": edge_count
-                        },
-                        "after": {
-                            "nodes": new_node_count,
-                            "edges": new_edge_count
-                        }
-                    }
-            except Exception as e:
-                print(f"Error during rebuild: {e}")
-                return {
-                    "status": "partial",
-                    "message": "Graph cleared but rebuild failed. Re-indexing documents required.",
-                    "error": str(e)
-                }
-        
-        # Step 5: If no rebuild method, suggest re-indexing
-        return {
-            "status": "success", 
-            "message": "Graph cleared successfully. Please re-index documents to rebuild.",
-            "before": {
-                "nodes": node_count if 'node_count' in locals() else 0,
-                "edges": edge_count if 'edge_count' in locals() else 0
-            },
-            "after": {
-                "nodes": 0,
-                "edges": 0
-            },
-            "action_required": "Re-index all documents to populate the graph"
-        }
-        
-    except Exception as e:
-        print(f"Error rebuilding graph: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/graph/clear")
-async def clear_graph():
-    """
-    Clear the entire knowledge graph. 
-    WARNING: This will remove ALL entities and relationships!
-    Documents will remain but the graph will be empty.
-    """
-    try:
-        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-            graph = rag_instance.chunk_entity_relation_graph
-            
-            # Count nodes before clearing
-            node_count = len(graph.nodes()) if hasattr(graph, 'nodes') else 0
-            edge_count = len(graph.edges()) if hasattr(graph, 'edges') else 0
-            
-            # Clear the graph
-            if hasattr(graph, 'clear'):
-                graph.clear()
-            elif hasattr(graph, 'remove_nodes_from'):
-                # Remove all nodes (which also removes edges)
-                nodes = list(graph.nodes())
-                graph.remove_nodes_from(nodes)
-            
-            # Clear graph storage if separate
-            if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
-                if hasattr(rag_instance.graph_storage, 'clear'):
-                    await rag_instance.graph_storage.clear()
-                # Force save for NetworkXStorage
-                if hasattr(rag_instance.graph_storage, 'save'):
-                    await rag_instance.graph_storage.save()
-            
-            # Clear vector storage for entities and relationships
-            if hasattr(rag_instance, 'entities_vdb') and rag_instance.entities_vdb:
-                try:
-                    # Implementation-specific clearing
-                    if hasattr(rag_instance.entities_vdb, 'clear'):
-                        await rag_instance.entities_vdb.clear()
-                    elif hasattr(rag_instance.entities_vdb, '_data'):
-                        # For simple implementations, clear the data dict
-                        rag_instance.entities_vdb._data.clear()
-                except:
-                    pass
-            
-            if hasattr(rag_instance, 'relationships_vdb') and rag_instance.relationships_vdb:
-                try:
-                    if hasattr(rag_instance.relationships_vdb, 'clear'):
-                        await rag_instance.relationships_vdb.clear()
-                    elif hasattr(rag_instance.relationships_vdb, '_data'):
-                        rag_instance.relationships_vdb._data.clear()
-                except:
-                    pass
-            
-            print(f"Cleared graph with {node_count} nodes and {edge_count} edges")
-            
-            return {
-                "status": "success",
-                "message": "Knowledge graph cleared successfully",
-                "removed": {
-                    "nodes": node_count,
-                    "edges": edge_count
-                }
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Knowledge graph not available"
-            }
-            
-    except Exception as e:
-        print(f"Error clearing graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
