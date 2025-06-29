@@ -1542,12 +1542,9 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             if (metadata.get('sitemap_url') == sitemap_url or 
                 metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
                 # The doc_id in metadata_store is the key, but LightRAG might be using custom_id
-                # Check if this document was inserted with a custom ID
                 metadata_keys_to_delete.append(doc_id)
                 
                 # For LightRAG deletion, we need to use the actual ID that LightRAG is using
-                # This could be the doc_id itself (if it's a custom ID like [domain] path)
-                # or it could be in the metadata
                 if doc_id.startswith('[') and ']' in doc_id:
                     # This is likely the custom ID used by LightRAG
                     docs_to_delete.append(doc_id)
@@ -1568,16 +1565,16 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             print(f"Document IDs to delete from LightRAG: {unique_docs_to_delete}")
             print(f"Metadata keys to delete: {metadata_keys_to_delete}")
             
-            # First clean up all document traces from LightRAG storages
-            # This will also clear and save the graph properly
+            # CRITICAL: Call the enhanced cleanup function FIRST
+            # This will clean all storage files and persist changes
             await cleanup_all_document_traces(unique_docs_to_delete)
             
-            # Then call the standard delete method
+            # Then call the standard delete method (this might be redundant but ensures compatibility)
             try:
                 await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
             except Exception as e:
                 print(f"Error in adelete_by_doc_id: {e}")
-                # Continue even if this fails, as cleanup_all_document_traces should have done most of the work
+                # Continue even if this fails, as cleanup_all_document_traces should have done the work
             
             # Remove from metadata store using the correct keys
             for key in metadata_keys_to_delete:
@@ -1587,52 +1584,29 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             # Save updated metadata
             save_metadata_store()
             
-            # Force a final save of the graph to ensure persistence
-            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            # Force a reload of the graph in the WebUI by clearing any cached references
+            # This ensures the WebUI will read the updated files
             if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph = rag_instance.chunk_entity_relation_graph
+                # Force reload from disk
+                working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
                 graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
-                try:
-                    nx.write_graphml(graph, graphml_path)
-                    print(f"Final save of graph to {graphml_path}")
-                except Exception as e:
-                    print(f"Error in final graph save: {e}")
-            
-            # Also ensure all vector DB files are saved
-            print("Ensuring all vector database files are saved...")
-            vdb_files = ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]
-            for file_name in vdb_files:
-                file_path = os.path.join(working_dir, file_name)
-                if os.path.exists(file_path):
+                if os.path.exists(graphml_path):
                     try:
-                        # Read and re-save to ensure it's properly formatted
-                        with open(file_path, 'r') as f:
-                            data = json.load(f)
-                        with open(file_path, 'w') as f:
-                            json.dump(data, f, indent=2)
-                        print(f"Verified save of {file_name}")
+                        import networkx as nx
+                        # Reload the graph from the saved file to ensure consistency
+                        reloaded_graph = nx.read_graphml(graphml_path)
+                        rag_instance.chunk_entity_relation_graph = reloaded_graph
+                        
+                        # Update the graph storage reference if it exists
+                        if hasattr(rag_instance, 'graph_storage'):
+                            if hasattr(rag_instance.graph_storage, '_graph'):
+                                rag_instance.graph_storage._graph = reloaded_graph
+                            elif hasattr(rag_instance.graph_storage, 'graph'):
+                                rag_instance.graph_storage.graph = reloaded_graph
+                        
+                        print(f"Reloaded graph from disk with {reloaded_graph.number_of_nodes()} nodes")
                     except Exception as e:
-                        print(f"Error verifying {file_name}: {e}")
-                        # Create empty structure if corrupted
-                        empty_structure = {"embedding_dim": 1536, "data": [], "matrix": []}
-                        with open(file_path, 'w') as f:
-                            json.dump(empty_structure, f, indent=2)
-            
-            # Force save all LightRAG storages
-            if hasattr(rag_instance, 'graph_storage'):
-                storage = rag_instance.graph_storage
-                if hasattr(storage, 'save'):
-                    try:
-                        await storage.save()
-                        print("Force saved graph storage")
-                    except Exception as e:
-                        print(f"Error force saving graph storage: {e}")
-                elif hasattr(storage, '_save'):
-                    try:
-                        storage._save()
-                        print("Force saved graph storage (sync)")
-                    except Exception as e:
-                        print(f"Error force saving graph storage (sync): {e}")
+                        print(f"Error reloading graph: {e}")
         
         return {
             "status": "success",
