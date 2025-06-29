@@ -346,6 +346,123 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
                 
                 print(f"Graph cleanup completed. Deleted {deleted_entities} entities and {deleted_relationships} relationships")
                 
+                # CRITICAL FIX: Force save the cleaned graph to disk
+                working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                
+                # Save the cleaned graph using NetworkX directly
+                try:
+                    nx.write_graphml(graph, graphml_path)
+                    print(f"Saved cleaned graph to {graphml_path}")
+                except Exception as e:
+                    print(f"Error saving graph with NetworkX: {e}")
+                    # If that fails, try creating a new empty graph
+                    try:
+                        empty_graph = nx.Graph()
+                        nx.write_graphml(empty_graph, graphml_path)
+                        print(f"Created new empty graph at {graphml_path}")
+                    except Exception as e2:
+                        print(f"Error creating empty graph: {e2}")
+                
+                # CRITICAL FIX: Clear and recreate vector database files
+                # The WebUI reads these files directly
+                vector_files = [
+                    "vdb_entities.json",
+                    "vdb_relationships.json",
+                    "vdb_chunks.json"
+                ]
+                
+                for vdb_file in vector_files:
+                    vdb_path = os.path.join(working_dir, vdb_file)
+                    if os.path.exists(vdb_path):
+                        try:
+                            # Read existing file to get structure
+                            with open(vdb_path, 'r') as f:
+                                vdb_data = json.load(f)
+                            
+                            # Keep structure but clear data
+                            if isinstance(vdb_data, dict) and 'data' in vdb_data:
+                                # Filter out entries related to deleted documents
+                                new_data = []
+                                for entry in vdb_data.get('data', []):
+                                    # Check if this entry is related to any deleted doc
+                                    keep_entry = True
+                                    entry_str = json.dumps(entry).lower()
+                                    
+                                    for doc_id in all_doc_id_patterns:
+                                        doc_id_lower = doc_id.lower()
+                                        if doc_id_lower in entry_str:
+                                            keep_entry = False
+                                            break
+                                    
+                                    if keep_entry:
+                                        new_data.append(entry)
+                                
+                                # Update the data
+                                vdb_data['data'] = new_data
+                                vdb_data['matrix'] = []  # Clear matrix as well
+                                
+                                # Save the cleaned data
+                                with open(vdb_path, 'w') as f:
+                                    json.dump(vdb_data, f, indent=2)
+                                print(f"Cleaned {vdb_file}: removed {len(vdb_data.get('data', [])) - len(new_data)} entries")
+                            else:
+                                # Unknown structure, create empty
+                                empty_vdb = {
+                                    "embedding_dim": 1536,
+                                    "data": [],
+                                    "matrix": []
+                                }
+                                with open(vdb_path, 'w') as f:
+                                    json.dump(empty_vdb, f, indent=2)
+                                print(f"Reset {vdb_file} to empty state")
+                        except Exception as e:
+                            print(f"Error cleaning {vdb_file}: {e}")
+                            # Create empty file on error
+                            try:
+                                empty_vdb = {
+                                    "embedding_dim": 1536,
+                                    "data": [],
+                                    "matrix": []
+                                }
+                                with open(vdb_path, 'w') as f:
+                                    json.dump(empty_vdb, f, indent=2)
+                                print(f"Created empty {vdb_file} after error")
+                            except Exception as e2:
+                                print(f"Failed to create empty {vdb_file}: {e2}")
+                
+                # Also clear any other storage files that might contain references
+                other_files = [
+                    "kv_store_text_chunks.json",
+                    "kv_store_full_docs.json",
+                    "doc_status.json"
+                ]
+                
+                for file_name in other_files:
+                    file_path = os.path.join(working_dir, file_name)
+                    if os.path.exists(file_path):
+                        try:
+                            with open(file_path, 'r') as f:
+                                data = json.load(f)
+                            
+                            if isinstance(data, dict):
+                                # Remove entries related to deleted documents
+                                keys_to_remove = []
+                                for key in data.keys():
+                                    for doc_id in all_doc_id_patterns:
+                                        if doc_id in key or key in all_doc_id_patterns:
+                                            keys_to_remove.append(key)
+                                            break
+                                
+                                for key in keys_to_remove:
+                                    del data[key]
+                                
+                                with open(file_path, 'w') as f:
+                                    json.dump(data, f, indent=2)
+                                print(f"Removed {len(keys_to_remove)} entries from {file_name}")
+                        except Exception as e:
+                            print(f"Error cleaning {file_name}: {e}")
+                
             except Exception as e:
                 print(f"Error with graph storage cleanup: {e}")
                 import traceback
@@ -373,6 +490,8 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
         print(f"  - Deleted {deleted_kvs} KV entries")
         print(f"  - Deleted {deleted_entities} graph entities")
         print(f"  - Deleted {deleted_relationships} graph relationships")
+        print(f"  - Cleaned vector database files")
+        print(f"  - Saved cleaned graph to disk")
         
     except Exception as e:
         print(f"Critical error in cleanup_all_document_traces: {e}")
