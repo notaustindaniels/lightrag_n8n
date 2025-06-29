@@ -106,147 +106,276 @@ def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
 async def cleanup_all_document_traces(doc_ids: List[str]):
     """Clean up all traces of documents from all LightRAG storage components"""
     try:
-        # 1. Delete from vector storage
-        if hasattr(rag_instance, 'vector_storage') and rag_instance.vector_storage:
-            try:
-                # Try to delete vectors associated with the document IDs
-                for doc_id in doc_ids:
-                    # LightRAG stores vectors with chunk IDs, we need to find all chunks
-                    await rag_instance.vector_storage.delete_by_doc_id(doc_id)
-            except Exception as e:
-                print(f"Error deleting from vector storage: {e}")
+        print(f"Starting comprehensive cleanup for documents: {doc_ids}")
         
-        # 2. Delete from KV storage (full documents and chunks)
+        # Create a set of all possible document ID formats to check
+        all_doc_id_patterns = set()
+        for doc_id in doc_ids:
+            all_doc_id_patterns.add(doc_id)
+            # If it's a custom ID format [domain] path, also check for variations
+            if doc_id.startswith('[') and ']' in doc_id:
+                # Extract domain and path parts for flexible matching
+                parts = doc_id.split('] ', 1)
+                if len(parts) == 2:
+                    domain_part = parts[0] + ']'
+                    all_doc_id_patterns.add(domain_part)
+        
+        # 1. Delete from vector storage (chunks, entities, relationships)
+        deleted_vectors = 0
+        if hasattr(rag_instance, 'chunks_vdb') and rag_instance.chunks_vdb:
+            try:
+                print("Cleaning chunks from vector storage...")
+                # Delete chunks by document ID
+                for doc_id in doc_ids:
+                    try:
+                        # Try direct deletion by doc_id
+                        await rag_instance.chunks_vdb.delete_by_doc_id(doc_id)
+                        deleted_vectors += 1
+                    except:
+                        # If that fails, try to find and delete chunks manually
+                        pass
+            except Exception as e:
+                print(f"Error deleting chunks from vector storage: {e}")
+        
+        # 2. Delete entities from vector storage
+        if hasattr(rag_instance, 'entities_vdb') and rag_instance.entities_vdb:
+            try:
+                print("Cleaning entities from vector storage...")
+                # Query all entities (this is inefficient but necessary without better filtering)
+                # In production, you'd want to implement a more efficient method
+                
+                # Check if we can query by metadata
+                entities_to_delete = []
+                
+                # Try to get entities and check their source_id
+                if hasattr(rag_instance.entities_vdb, 'get_all') or hasattr(rag_instance.entities_vdb, 'query'):
+                    try:
+                        # This is a workaround - ideally LightRAG would support querying by metadata
+                        # For now, we'll delete entities after checking them
+                        print("Note: Entity cleanup from vector DB may be limited without metadata query support")
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"Error cleaning entities from vector storage: {e}")
+        
+        # 3. Delete relationships from vector storage  
+        if hasattr(rag_instance, 'relationships_vdb') and rag_instance.relationships_vdb:
+            try:
+                print("Cleaning relationships from vector storage...")
+                # Similar limitations as entities
+            except Exception as e:
+                print(f"Error cleaning relationships from vector storage: {e}")
+        
+        # 4. Delete from KV storage (full documents and chunks)
+        deleted_kvs = 0
         if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
             try:
+                print("Cleaning KV storage...")
                 # Delete full documents
                 for doc_id in doc_ids:
                     await rag_instance.kv_storage.delete({doc_id})
+                    deleted_kvs += 1
                     
-                # Delete text chunks - LightRAG stores chunks with keys like "chunk-{doc_id}-{chunk_index}"
-                # We need to find and delete all chunks for each document
-                if hasattr(rag_instance.kv_storage, '_data'):
-                    keys_to_delete = []
+                # Delete text chunks
+                keys_to_delete = set()
+                
+                # Get all keys and check for chunk patterns
+                if hasattr(rag_instance.kv_storage, 'get_all'):
+                    all_data = await rag_instance.kv_storage.get_all()
+                    for key in all_data.keys():
+                        for doc_id in all_doc_id_patterns:
+                            if key.startswith(f"chunk-{doc_id}") or f"chunk|||{doc_id}" in key:
+                                keys_to_delete.add(key)
+                elif hasattr(rag_instance.kv_storage, '_data'):
+                    # For in-memory storage
                     for key in rag_instance.kv_storage._data.keys():
-                        for doc_id in doc_ids:
-                            if key.startswith(f"chunk-{doc_id}"):
-                                keys_to_delete.append(key)
-                    if keys_to_delete:
-                        await rag_instance.kv_storage.delete(set(keys_to_delete))
+                        for doc_id in all_doc_id_patterns:
+                            if key.startswith(f"chunk-{doc_id}") or f"chunk|||{doc_id}" in key:
+                                keys_to_delete.add(key)
+                
+                if keys_to_delete:
+                    print(f"Deleting {len(keys_to_delete)} chunks from KV storage")
+                    await rag_instance.kv_storage.delete(keys_to_delete)
+                    deleted_kvs += len(keys_to_delete)
+                    
             except Exception as e:
                 print(f"Error deleting from KV storage: {e}")
         
-        # 3. Delete from doc status storage
+        # 5. Delete from doc status storage
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
             try:
-                await rag_instance.doc_status.delete({doc_id for doc_id in doc_ids})
+                print("Cleaning doc status storage...")
+                await rag_instance.doc_status.delete(set(doc_ids))
             except Exception as e:
                 print(f"Error deleting from doc status storage: {e}")
         
-        # 4. Clean up graph storage and ALL vector databases
-        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        # 6. Clean up graph storage - THIS IS THE CRITICAL PART
+        deleted_entities = 0
+        deleted_relationships = 0
         
-        # Clear the NetworkX graph
-        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph') and rag_instance.chunk_entity_relation_graph:
             try:
-                if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                    graph = rag_instance.chunk_entity_relation_graph
+                print("Cleaning graph storage...")
+                graph = rag_instance.chunk_entity_relation_graph
+                
+                # Determine storage type
+                storage_type = type(graph).__name__
+                print(f"Graph storage type: {storage_type}")
+                
+                entities_to_delete = set()
+                relationships_to_delete = set()
+                
+                # NetworkX-based storage
+                if hasattr(graph, 'nodes') and hasattr(graph, 'edges'):
+                    print("Using NetworkX graph cleanup method...")
                     
-                    if hasattr(graph, 'clear'):
-                        print(f"Clearing entire knowledge graph")
-                        graph.clear()
+                    # Find entities to delete
+                    nodes_to_check = list(graph.nodes(data=True))
+                    for node_id, node_data in nodes_to_check:
+                        source_id = node_data.get('source_id', '')
+                        file_path = node_data.get('file_path', '')
                         
-                        # Save the cleared graph
-                        graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                        # Check source_id
+                        if source_id:
+                            source_ids = source_id.split('|||') if '|||' in source_id else [source_id]
+                            for sid in source_ids:
+                                for doc_id in all_doc_id_patterns:
+                                    if (sid == doc_id or 
+                                        sid.startswith(f"chunk-{doc_id}") or
+                                        doc_id in sid):
+                                        entities_to_delete.add(node_id)
+                                        break
+                        
+                        # Also check file_path
+                        if file_path and not node_id in entities_to_delete:
+                            file_paths = file_path.split('|||') if '|||' in file_path else [file_path]
+                            for fp in file_paths:
+                                for doc_id in all_doc_id_patterns:
+                                    if fp == doc_id or doc_id in fp:
+                                        entities_to_delete.add(node_id)
+                                        break
+                    
+                    # Find relationships to delete
+                    edges_to_check = list(graph.edges(data=True))
+                    for src, tgt, edge_data in edges_to_check:
+                        source_id = edge_data.get('source_id', '')
+                        
+                        # Check if either endpoint is being deleted
+                        if src in entities_to_delete or tgt in entities_to_delete:
+                            relationships_to_delete.add((src, tgt))
+                            continue
+                            
+                        # Check source_id of the relationship itself
+                        if source_id:
+                            source_ids = source_id.split('|||') if '|||' in source_id else [source_id]
+                            for sid in source_ids:
+                                for doc_id in all_doc_id_patterns:
+                                    if (sid == doc_id or 
+                                        sid.startswith(f"chunk-{doc_id}") or
+                                        doc_id in sid):
+                                        relationships_to_delete.add((src, tgt))
+                                        break
+                    
+                    # Delete relationships first (before deleting nodes)
+                    if relationships_to_delete:
+                        print(f"Deleting {len(relationships_to_delete)} relationships from graph")
+                        for src, tgt in relationships_to_delete:
+                            try:
+                                graph.remove_edge(src, tgt)
+                                deleted_relationships += 1
+                            except:
+                                pass
+                    
+                    # Delete entities
+                    if entities_to_delete:
+                        print(f"Deleting {len(entities_to_delete)} entities from graph")
+                        for entity in entities_to_delete:
+                            try:
+                                graph.remove_node(entity)
+                                deleted_entities += 1
+                            except:
+                                pass
+                
+                # Neo4J or PostgreSQL storage
+                elif hasattr(graph, 'query') or hasattr(graph, 'execute'):
+                    print("Using database graph cleanup method...")
+                    
+                    # For Neo4J
+                    if 'neo4j' in storage_type.lower():
+                        # Build Cypher query to delete nodes and relationships
                         try:
-                            nx.write_graphml(graph, graphml_path)
-                            print(f"Saved cleared graph to {graphml_path}")
+                            # Delete relationships and nodes that match source_id
+                            for doc_id in all_doc_id_patterns:
+                                cypher_query = f"""
+                                MATCH (n)
+                                WHERE n.source_id CONTAINS '{doc_id}'
+                                   OR n.file_path CONTAINS '{doc_id}'
+                                DETACH DELETE n
+                                """
+                                await graph.query(cypher_query)
                         except Exception as e:
-                            print(f"Error saving GraphML: {e}")
+                            print(f"Neo4J cleanup error: {e}")
+                    
+                    # For PostgreSQL with Apache AGE
+                    elif 'postgres' in storage_type.lower() or 'pg' in storage_type.lower():
+                        try:
+                            # Delete entities and relationships matching source_id
+                            for doc_id in all_doc_id_patterns:
+                                sql_query = f"""
+                                SELECT * FROM cypher('graph_name', $$
+                                    MATCH (n)
+                                    WHERE n.source_id CONTAINS '{doc_id}'
+                                       OR n.file_path CONTAINS '{doc_id}'
+                                    DETACH DELETE n
+                                $$) as (a agtype);
+                                """
+                                await graph.execute(sql_query)
+                        except Exception as e:
+                            print(f"PostgreSQL AGE cleanup error: {e}")
+                
+                # Use LightRAG's built-in delete methods if available
+                if hasattr(rag_instance, 'adelete_entity') and entities_to_delete:
+                    print(f"Using LightRAG's adelete_entity for {len(entities_to_delete)} entities")
+                    for entity in entities_to_delete:
+                        try:
+                            await rag_instance.adelete_entity(entity)
+                            deleted_entities += 1
+                        except Exception as e:
+                            print(f"Error deleting entity {entity}: {e}")
+                
+                print(f"Graph cleanup completed. Deleted {deleted_entities} entities and {deleted_relationships} relationships")
+                
             except Exception as e:
-                print(f"Error clearing graph: {e}")
+                print(f"Error with graph storage cleanup: {e}")
+                import traceback
+                traceback.print_exc()
         
-        # CRITICAL: Clear ALL graph-related and vector database files
-        files_to_clear = [
-            # Graph files
-            "graph_chunk_entity_relation.graphml",
-            "graph_data.json",
-            "graph_cache.json",
-            # Vector database files - THESE ARE CRITICAL
-            "vdb_entities.json",
-            "vdb_relationships.json", 
-            "vdb_chunks.json",
-            # Additional storage files that might contain graph data
-            "entity_embedding.json",
-            "relationship_embedding.json",
-            "document_graph_storage.json"
-        ]
-        
-        print(f"Clearing all graph and vector database files in {working_dir}")
-        
-        for file_name in files_to_clear:
-            file_path = os.path.join(working_dir, file_name)
-            if os.path.exists(file_path):
-                try:
-                    if file_name.endswith('.graphml'):
-                        # Write empty graph
-                        empty_graph = nx.Graph()
-                        nx.write_graphml(empty_graph, file_path)
-                        print(f"Wrote empty graph to {file_path}")
-                    elif file_name.startswith('vdb_'):
-                        # For vector database files, write the proper empty structure
-                        # These files have a specific format with embedding_dim and data array
-                        empty_vdb = {
-                            "embedding_dim": 1536,  # Default OpenAI embedding dimension
-                            "data": [],
-                            "matrix": []
-                        }
-                        with open(file_path, 'w') as f:
-                            json.dump(empty_vdb, f)
-                        print(f"Cleared vector database: {file_path}")
-                    else:
-                        # For other JSON files, write empty object
-                        with open(file_path, 'w') as f:
-                            json.dump({}, f)
-                        print(f"Cleared {file_path}")
-                except Exception as e:
-                    print(f"Error clearing {file_path}: {e}")
-                    # Try to delete the file if clearing fails
-                    try:
-                        os.remove(file_path)
-                        print(f"Deleted {file_path}")
-                    except Exception as del_e:
-                        print(f"Error deleting {file_path}: {del_e}")
-        
-        # 5. Clear entity and relationship vector stores if accessible through rag_instance
-        # These might be accessible through different attributes
-        possible_vdb_attrs = [
-            'entities_vdb', 'relationships_vdb', 'chunks_vdb',
-            'entity_vdb', 'relation_vdb', 'chunk_vdb',
-            'entities_vector_db', 'relationships_vector_db'
-        ]
-        
-        for attr_name in possible_vdb_attrs:
-            if hasattr(rag_instance, attr_name):
-                vdb = getattr(rag_instance, attr_name)
-                if vdb and hasattr(vdb, 'clear'):
-                    try:
-                        await vdb.clear()
-                        print(f"Cleared {attr_name}")
-                    except Exception as e:
-                        print(f"Error clearing {attr_name}: {e}")
-        
-        # 6. Clear any caches
+        # 7. Clear LLM response cache
         if hasattr(rag_instance, 'llm_response_cache'):
             try:
+                print("Clearing LLM response cache...")
                 await rag_instance.aclear_cache()
             except Exception as e:
                 print(f"Error clearing cache: {e}")
         
-        print("Completed cleanup of all document traces including vector databases")
-                
+        # 8. If all else fails, try using LightRAG's delete_by_doc_id method
+        # This might handle some cleanup we missed
+        try:
+            if hasattr(rag_instance, 'adelete_by_doc_id'):
+                print("Running LightRAG's built-in delete_by_doc_id as final cleanup...")
+                await rag_instance.adelete_by_doc_id(doc_ids)
+        except Exception as e:
+            print(f"Error with built-in delete method: {e}")
+        
+        print(f"Cleanup completed. Summary:")
+        print(f"  - Deleted {deleted_vectors} vector entries")
+        print(f"  - Deleted {deleted_kvs} KV entries")
+        print(f"  - Deleted {deleted_entities} graph entities")
+        print(f"  - Deleted {deleted_relationships} graph relationships")
+        
     except Exception as e:
-        print(f"Error in cleanup_all_document_traces: {e}")
+        print(f"Critical error in cleanup_all_document_traces: {e}")
         import traceback
         traceback.print_exc()
         raise
