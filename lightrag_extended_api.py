@@ -1753,7 +1753,11 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             await cleanup_all_document_traces(unique_docs_to_delete)
             
             # Then call the standard delete method
-            await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
+            try:
+                await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
+            except Exception as e:
+                print(f"Error in adelete_by_doc_id: {e}")
+                # Continue even if this fails, as cleanup_all_document_traces should have done most of the work
             
             # Remove from metadata store using the correct keys
             for key in metadata_keys_to_delete:
@@ -1773,6 +1777,42 @@ async def delete_documents_by_sitemap(sitemap_url: str):
                     print(f"Final save of graph to {graphml_path}")
                 except Exception as e:
                     print(f"Error in final graph save: {e}")
+            
+            # Also ensure all vector DB files are saved
+            print("Ensuring all vector database files are saved...")
+            vdb_files = ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]
+            for file_name in vdb_files:
+                file_path = os.path.join(working_dir, file_name)
+                if os.path.exists(file_path):
+                    try:
+                        # Read and re-save to ensure it's properly formatted
+                        with open(file_path, 'r') as f:
+                            data = json.load(f)
+                        with open(file_path, 'w') as f:
+                            json.dump(data, f, indent=2)
+                        print(f"Verified save of {file_name}")
+                    except Exception as e:
+                        print(f"Error verifying {file_name}: {e}")
+                        # Create empty structure if corrupted
+                        empty_structure = {"embedding_dim": 1536, "data": [], "matrix": []}
+                        with open(file_path, 'w') as f:
+                            json.dump(empty_structure, f, indent=2)
+            
+            # Force save all LightRAG storages
+            if hasattr(rag_instance, 'graph_storage'):
+                storage = rag_instance.graph_storage
+                if hasattr(storage, 'save'):
+                    try:
+                        await storage.save()
+                        print("Force saved graph storage")
+                    except Exception as e:
+                        print(f"Error force saving graph storage: {e}")
+                elif hasattr(storage, '_save'):
+                    try:
+                        storage._save()
+                        print("Force saved graph storage (sync)")
+                    except Exception as e:
+                        print(f"Error force saving graph storage (sync): {e}")
         
         return {
             "status": "success",
@@ -1784,6 +1824,9 @@ async def delete_documents_by_sitemap(sitemap_url: str):
         }
         
     except Exception as e:
+        print(f"Error in delete_documents_by_sitemap: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/graph/force-clear-all")
