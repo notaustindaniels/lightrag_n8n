@@ -6,6 +6,7 @@ import os
 import asyncio
 import hashlib
 import json
+import networkx as nx
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from urllib.parse import urlparse
@@ -142,25 +143,70 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
             except Exception as e:
                 print(f"Error deleting from doc status storage: {e}")
         
-# 4. Clean up graph storage (entities and relationships from these documents)
+        # 4. Clean up graph storage (entities and relationships from these documents)
         if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
             try:
                 # Access the NetworkX graph directly
                 if hasattr(rag_instance, 'chunk_entity_relation_graph'):
                     graph = rag_instance.chunk_entity_relation_graph
                     
-                    # Since LightRAG doesn't maintain document-to-entity mappings,
-                    # and we're deleting all documents from a sitemap, 
-                    # the most effective approach is to clear the entire graph
+                    # Clear the entire graph
                     if hasattr(graph, 'clear'):
                         print(f"Clearing entire knowledge graph for document cleanup")
                         graph.clear()
                         
-                        # Save the cleared graph to disk
+                        # Critical: Force save the cleared graph to GraphML file
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                        
+                        # Method 1: Use NetworkX write_graphml directly
+                        try:
+                            import networkx as nx
+                            nx.write_graphml(graph, graphml_path)
+                            print(f"Saved cleared graph to {graphml_path}")
+                        except Exception as e:
+                            print(f"Error saving with NetworkX: {e}")
+                            
+                        # Method 2: Try using the storage's save method if available
                         if hasattr(rag_instance.graph_storage, 'save'):
-                            await rag_instance.graph_storage.save()
-                        elif hasattr(rag_instance.graph_storage, '_save'):
-                            rag_instance.graph_storage._save()
+                            try:
+                                await rag_instance.graph_storage.save()
+                                print("Saved using graph_storage.save()")
+                            except Exception as e:
+                                print(f"Error with async save: {e}")
+                                
+                        # Method 3: Try the synchronous _save method
+                        if hasattr(rag_instance.graph_storage, '_save'):
+                            try:
+                                rag_instance.graph_storage._save()
+                                print("Saved using graph_storage._save()")
+                            except Exception as e:
+                                print(f"Error with sync _save: {e}")
+                        
+                        # Also clear any other graph-related files
+                        graph_files = [
+                            "graph_chunk_entity_relation.graphml",
+                            "graph_data.json",
+                            "graph_cache.json"
+                        ]
+                        
+                        for graph_file in graph_files:
+                            file_path = os.path.join(working_dir, graph_file)
+                            if os.path.exists(file_path):
+                                try:
+                                    # For GraphML, write empty graph
+                                    if graph_file.endswith('.graphml'):
+                                        import networkx as nx
+                                        empty_graph = nx.Graph()
+                                        nx.write_graphml(empty_graph, file_path)
+                                        print(f"Wrote empty graph to {file_path}")
+                                    else:
+                                        # For JSON files, write empty structure
+                                        with open(file_path, 'w') as f:
+                                            json.dump({}, f)
+                                        print(f"Cleared {file_path}")
+                                except Exception as e:
+                                    print(f"Error clearing {file_path}: {e}")
                         
                         print("Knowledge graph cleared and saved")
                     else:
@@ -172,6 +218,8 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
                 
             except Exception as e:
                 print(f"Error with graph storage cleanup: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 5. Clear any caches that might contain document data
         if hasattr(rag_instance, 'llm_response_cache'):
@@ -205,6 +253,20 @@ async def lifespan(app: FastAPI):
         except:
             metadata_store = {}
     
+    # Check if GraphML file exists and is valid
+    graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+    if os.path.exists(graphml_path):
+        try:
+            # Try to load it to check if it's valid
+            test_graph = nx.read_graphml(graphml_path)
+            print(f"Found existing graph with {test_graph.number_of_nodes()} nodes and {test_graph.number_of_edges()} edges")
+        except Exception as e:
+            print(f"Error reading existing GraphML file: {e}")
+            # Create an empty GraphML file
+            empty_graph = nx.Graph()
+            nx.write_graphml(empty_graph, graphml_path)
+            print("Created new empty GraphML file")
+    
     # Initialize LightRAG
     rag_instance = LightRAG(
         working_dir=working_dir,
@@ -218,6 +280,14 @@ async def lifespan(app: FastAPI):
     
     await rag_instance.initialize_storages()
     await initialize_pipeline_status()
+    
+    # Ensure the graph is properly loaded
+    if hasattr(rag_instance, 'graph_storage') and hasattr(rag_instance.graph_storage, 'load'):
+        try:
+            await rag_instance.graph_storage.load()
+            print("Graph storage loaded successfully")
+        except Exception as e:
+            print(f"Error loading graph storage: {e}")
     
     yield
     
@@ -545,6 +615,197 @@ async def update_relation(request: RelationUpdateRequest):
         raise HTTPException(
             status_code=500, detail=f"Error updating relation: {str(e)}"
         )
+
+@app.get("/graph/status")
+async def get_graph_status():
+    """Get the current status of the knowledge graph"""
+    try:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            
+            status = {
+                "exists": True,
+                "type": type(graph).__name__,
+                "nodes": graph.number_of_nodes() if hasattr(graph, 'number_of_nodes') else 0,
+                "edges": graph.number_of_edges() if hasattr(graph, 'number_of_edges') else 0,
+                "storage_type": type(rag_instance.graph_storage).__name__ if hasattr(rag_instance, 'graph_storage') else "Unknown"
+            }
+            
+            # Check if GraphML file exists
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            graphml_file = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+            status["graphml_file_exists"] = os.path.exists(graphml_file)
+            if status["graphml_file_exists"]:
+                status["graphml_file_size"] = os.path.getsize(graphml_file)
+            
+            # Sample some nodes if they exist
+            if status["nodes"] > 0 and hasattr(graph, 'nodes'):
+                sample_nodes = list(graph.nodes())[:5]
+                status["sample_nodes"] = sample_nodes
+            
+            return status
+        else:
+            return {
+                "exists": False,
+                "message": "Knowledge graph not initialized"
+            }
+            
+    except Exception as e:
+        print(f"Error getting graph status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/graph/clear")
+async def clear_knowledge_graph():
+    """Clear the entire knowledge graph"""
+    try:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            
+            # Get node and edge counts before clearing
+            node_count = graph.number_of_nodes() if hasattr(graph, 'number_of_nodes') else 0
+            edge_count = graph.number_of_edges() if hasattr(graph, 'number_of_edges') else 0
+            
+            if hasattr(graph, 'clear'):
+                print(f"Clearing knowledge graph with {node_count} nodes and {edge_count} edges")
+                graph.clear()
+                
+                # Critical: Save the cleared graph to the GraphML file
+                working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                
+                # Method 1: Use NetworkX write_graphml directly to ensure it's saved
+                try:
+                    import networkx as nx
+                    nx.write_graphml(graph, graphml_path)
+                    print(f"Saved cleared graph to {graphml_path} using NetworkX")
+                except Exception as e:
+                    print(f"Error saving with NetworkX: {e}")
+                
+                # Method 2: Try the storage's save methods
+                saved = False
+                if hasattr(rag_instance.graph_storage, 'save'):
+                    try:
+                        await rag_instance.graph_storage.save()
+                        print("Saved using async graph_storage.save()")
+                        saved = True
+                    except Exception as e:
+                        print(f"Error with async save: {e}")
+                        
+                if not saved and hasattr(rag_instance.graph_storage, '_save'):
+                    try:
+                        rag_instance.graph_storage._save()
+                        print("Saved using sync graph_storage._save()")
+                        saved = True
+                    except Exception as e:
+                        print(f"Error with sync _save: {e}")
+                
+                # Method 3: If storage has upsert method, trigger a save by upserting nothing
+                if not saved and hasattr(rag_instance.graph_storage, 'upsert'):
+                    try:
+                        await rag_instance.graph_storage.upsert([], [])
+                        print("Triggered save via empty upsert")
+                    except Exception as e:
+                        print(f"Error with upsert trigger: {e}")
+                
+                # Clear all graph-related files
+                graph_files = [
+                    "graph_chunk_entity_relation.graphml",
+                    "graph_data.json",
+                    "graph_cache.json",
+                    "vdb_entities.json",
+                    "vdb_relationships.json"
+                ]
+                
+                for graph_file in graph_files:
+                    file_path = os.path.join(working_dir, graph_file)
+                    if os.path.exists(file_path):
+                        try:
+                            if graph_file.endswith('.graphml'):
+                                # Ensure GraphML file contains empty graph
+                                import networkx as nx
+                                empty_graph = nx.Graph()
+                                nx.write_graphml(empty_graph, file_path)
+                                print(f"Wrote empty graph to {file_path}")
+                            else:
+                                # Clear JSON files
+                                with open(file_path, 'w') as f:
+                                    json.dump({} if not graph_file.startswith('vdb_') else {"data": []}, f)
+                                print(f"Cleared {file_path}")
+                        except Exception as e:
+                            print(f"Error handling {file_path}: {e}")
+                
+                return {
+                    "status": "success",
+                    "message": "Knowledge graph cleared successfully",
+                    "cleared": {
+                        "nodes": node_count,
+                        "edges": edge_count
+                    }
+                }
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Graph clear method not available"
+                )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="Knowledge graph not found"
+            )
+            
+    except Exception as e:
+        print(f"Error clearing knowledge graph: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/graph/reload")
+async def reload_graph():
+    """Force reload the graph from the GraphML file"""
+    try:
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+        
+        if os.path.exists(graphml_path):
+            # Load the graph from file
+            loaded_graph = nx.read_graphml(graphml_path)
+            node_count = loaded_graph.number_of_nodes()
+            edge_count = loaded_graph.number_of_edges()
+            
+            # Replace the in-memory graph
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                rag_instance.chunk_entity_relation_graph = loaded_graph
+                
+                # Also update the graph storage's reference if it has one
+                if hasattr(rag_instance.graph_storage, '_graph'):
+                    rag_instance.graph_storage._graph = loaded_graph
+                elif hasattr(rag_instance.graph_storage, 'graph'):
+                    rag_instance.graph_storage.graph = loaded_graph
+                
+                return {
+                    "status": "success",
+                    "message": f"Graph reloaded from {graphml_path}",
+                    "nodes": node_count,
+                    "edges": edge_count
+                }
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not find graph reference in RAG instance"
+                )
+        else:
+            return {
+                "status": "warning",
+                "message": f"GraphML file not found at {graphml_path}",
+                "nodes": 0,
+                "edges": 0
+            }
+            
+    except Exception as e:
+        print(f"Error reloading graph: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
@@ -1067,6 +1328,7 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             print(f"Metadata keys to delete: {metadata_keys_to_delete}")
             
             # First clean up all document traces from LightRAG storages
+            # This will also clear and save the graph properly
             await cleanup_all_document_traces(unique_docs_to_delete)
             
             # Then call the standard delete method
@@ -1079,13 +1341,25 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             
             # Save updated metadata
             save_metadata_store()
+            
+            # Force a final save of the graph to ensure persistence
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                try:
+                    nx.write_graphml(graph, graphml_path)
+                    print(f"Final save of graph to {graphml_path}")
+                except Exception as e:
+                    print(f"Error in final graph save: {e}")
         
         return {
             "status": "success",
             "message": f"Deleted {len(metadata_keys_to_delete)} documents for sitemap {sitemap_url}",
             "deleted_count": len(metadata_keys_to_delete),
             "deleted_ids": unique_docs_to_delete if 'unique_docs_to_delete' in locals() else [],
-            "sitemap_url": sitemap_url
+            "sitemap_url": sitemap_url,
+            "graph_cleared": True
         }
         
     except Exception as e:
