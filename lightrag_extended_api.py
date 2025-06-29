@@ -104,395 +104,217 @@ def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
         return f"text/{doc_id[:8]}..."
 
 async def cleanup_all_document_traces(doc_ids: List[str]):
-    """Clean up all traces of documents from all LightRAG storage components"""
+    """Enhanced cleanup that ensures all traces are removed and properly persisted"""
     try:
-        print(f"Starting comprehensive cleanup for documents: {doc_ids}")
+        print(f"Starting enhanced cleanup for documents: {doc_ids}")
         
         # Create a set of all possible document ID formats to check
         all_doc_id_patterns = set()
         for doc_id in doc_ids:
             all_doc_id_patterns.add(doc_id)
-            # If it's a custom ID format [domain] path, also check for variations
             if doc_id.startswith('[') and ']' in doc_id:
-                # Extract domain and path parts for flexible matching
                 parts = doc_id.split('] ', 1)
                 if len(parts) == 2:
                     domain_part = parts[0] + ']'
                     all_doc_id_patterns.add(domain_part)
         
-        # 1. Delete from vector storage (chunks, entities, relationships)
-        deleted_vectors = 0
-        if hasattr(rag_instance, 'chunks_vdb') and rag_instance.chunks_vdb:
-            try:
-                print("Cleaning chunks from vector storage...")
-                # Delete chunks by document ID
-                for doc_id in doc_ids:
-                    try:
-                        # Try direct deletion by doc_id
-                        await rag_instance.chunks_vdb.delete_by_doc_id(doc_id)
-                        deleted_vectors += 1
-                    except:
-                        # If that fails, try to find and delete chunks manually
-                        pass
-            except Exception as e:
-                print(f"Error deleting chunks from vector storage: {e}")
-        
-        # 2. Delete entities from vector storage
-        if hasattr(rag_instance, 'entities_vdb') and rag_instance.entities_vdb:
-            try:
-                print("Cleaning entities from vector storage...")
-                # Query all entities (this is inefficient but necessary without better filtering)
-                # In production, you'd want to implement a more efficient method
-                
-                # Check if we can query by metadata
-                entities_to_delete = []
-                
-                # Try to get entities and check their source_id
-                if hasattr(rag_instance.entities_vdb, 'get_all') or hasattr(rag_instance.entities_vdb, 'query'):
-                    try:
-                        # This is a workaround - ideally LightRAG would support querying by metadata
-                        # For now, we'll delete entities after checking them
-                        print("Note: Entity cleanup from vector DB may be limited without metadata query support")
-                    except:
-                        pass
-                        
-            except Exception as e:
-                print(f"Error cleaning entities from vector storage: {e}")
-        
-        # 3. Delete relationships from vector storage  
-        if hasattr(rag_instance, 'relationships_vdb') and rag_instance.relationships_vdb:
-            try:
-                print("Cleaning relationships from vector storage...")
-                # Similar limitations as entities
-            except Exception as e:
-                print(f"Error cleaning relationships from vector storage: {e}")
-        
-        # 4. Delete from KV storage (full documents and chunks)
-        deleted_kvs = 0
-        if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
-            try:
-                print("Cleaning KV storage...")
-                # Delete full documents
-                for doc_id in doc_ids:
-                    await rag_instance.kv_storage.delete({doc_id})
-                    deleted_kvs += 1
-                    
-                # Delete text chunks
-                keys_to_delete = set()
-                
-                # Get all keys and check for chunk patterns
-                if hasattr(rag_instance.kv_storage, 'get_all'):
-                    all_data = await rag_instance.kv_storage.get_all()
-                    for key in all_data.keys():
-                        for doc_id in all_doc_id_patterns:
-                            if key.startswith(f"chunk-{doc_id}") or f"chunk|||{doc_id}" in key:
-                                keys_to_delete.add(key)
-                elif hasattr(rag_instance.kv_storage, '_data'):
-                    # For in-memory storage
-                    for key in rag_instance.kv_storage._data.keys():
-                        for doc_id in all_doc_id_patterns:
-                            if key.startswith(f"chunk-{doc_id}") or f"chunk|||{doc_id}" in key:
-                                keys_to_delete.add(key)
-                
-                if keys_to_delete:
-                    print(f"Deleting {len(keys_to_delete)} chunks from KV storage")
-                    await rag_instance.kv_storage.delete(keys_to_delete)
-                    deleted_kvs += len(keys_to_delete)
-                    
-            except Exception as e:
-                print(f"Error deleting from KV storage: {e}")
-        
-        # 5. Delete from doc status storage
-        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
-            try:
-                print("Cleaning doc status storage...")
-                await rag_instance.doc_status.delete(set(doc_ids))
-            except Exception as e:
-                print(f"Error deleting from doc status storage: {e}")
-        
-        # 6. Clean up graph storage - THIS IS THE CRITICAL PART
-        deleted_entities = 0
-        deleted_relationships = 0
-        
-        if hasattr(rag_instance, 'chunk_entity_relation_graph') and rag_instance.chunk_entity_relation_graph:
-            try:
-                print("Cleaning graph storage...")
-                graph = rag_instance.chunk_entity_relation_graph
-                
-                # Determine storage type
-                storage_type = type(graph).__name__
-                print(f"Graph storage type: {storage_type}")
-                
-                entities_to_delete = set()
-                relationships_to_delete = set()
-                
-                # NetworkX-based storage
-                if hasattr(graph, 'nodes') and hasattr(graph, 'edges'):
-                    print("Using NetworkX graph cleanup method...")
-                    
-                    # Find entities to delete
-                    nodes_to_check = list(graph.nodes(data=True))
-                    for node_id, node_data in nodes_to_check:
-                        source_id = node_data.get('source_id', '')
-                        file_path = node_data.get('file_path', '')
-                        
-                        # Check source_id
-                        if source_id:
-                            source_ids = source_id.split('|||') if '|||' in source_id else [source_id]
-                            for sid in source_ids:
-                                for doc_id in all_doc_id_patterns:
-                                    if (sid == doc_id or 
-                                        sid.startswith(f"chunk-{doc_id}") or
-                                        doc_id in sid):
-                                        entities_to_delete.add(node_id)
-                                        break
-                        
-                        # Also check file_path
-                        if file_path and not node_id in entities_to_delete:
-                            file_paths = file_path.split('|||') if '|||' in file_path else [file_path]
-                            for fp in file_paths:
-                                for doc_id in all_doc_id_patterns:
-                                    if fp == doc_id or doc_id in fp:
-                                        entities_to_delete.add(node_id)
-                                        break
-                    
-                    # Find relationships to delete
-                    edges_to_check = list(graph.edges(data=True))
-                    for src, tgt, edge_data in edges_to_check:
-                        source_id = edge_data.get('source_id', '')
-                        
-                        # Check if either endpoint is being deleted
-                        if src in entities_to_delete or tgt in entities_to_delete:
-                            relationships_to_delete.add((src, tgt))
-                            continue
-                            
-                        # Check source_id of the relationship itself
-                        if source_id:
-                            source_ids = source_id.split('|||') if '|||' in source_id else [source_id]
-                            for sid in source_ids:
-                                for doc_id in all_doc_id_patterns:
-                                    if (sid == doc_id or 
-                                        sid.startswith(f"chunk-{doc_id}") or
-                                        doc_id in sid):
-                                        relationships_to_delete.add((src, tgt))
-                                        break
-                    
-                    # Delete relationships first (before deleting nodes)
-                    if relationships_to_delete:
-                        print(f"Deleting {len(relationships_to_delete)} relationships from graph")
-                        for src, tgt in relationships_to_delete:
-                            try:
-                                graph.remove_edge(src, tgt)
-                                deleted_relationships += 1
-                            except:
-                                pass
-                    
-                    # Delete entities
-                    if entities_to_delete:
-                        print(f"Deleting {len(entities_to_delete)} entities from graph")
-                        for entity in entities_to_delete:
-                            try:
-                                graph.remove_node(entity)
-                                deleted_entities += 1
-                            except:
-                                pass
-                
-                # Neo4J or PostgreSQL storage
-                elif hasattr(graph, 'query') or hasattr(graph, 'execute'):
-                    print("Using database graph cleanup method...")
-                    
-                    # For Neo4J
-                    if 'neo4j' in storage_type.lower():
-                        # Build Cypher query to delete nodes and relationships
-                        try:
-                            # Delete relationships and nodes that match source_id
-                            for doc_id in all_doc_id_patterns:
-                                cypher_query = f"""
-                                MATCH (n)
-                                WHERE n.source_id CONTAINS '{doc_id}'
-                                   OR n.file_path CONTAINS '{doc_id}'
-                                DETACH DELETE n
-                                """
-                                await graph.query(cypher_query)
-                        except Exception as e:
-                            print(f"Neo4J cleanup error: {e}")
-                    
-                    # For PostgreSQL with Apache AGE
-                    elif 'postgres' in storage_type.lower() or 'pg' in storage_type.lower():
-                        try:
-                            # Delete entities and relationships matching source_id
-                            for doc_id in all_doc_id_patterns:
-                                sql_query = f"""
-                                SELECT * FROM cypher('graph_name', $$
-                                    MATCH (n)
-                                    WHERE n.source_id CONTAINS '{doc_id}'
-                                       OR n.file_path CONTAINS '{doc_id}'
-                                    DETACH DELETE n
-                                $$) as (a agtype);
-                                """
-                                await graph.execute(sql_query)
-                        except Exception as e:
-                            print(f"PostgreSQL AGE cleanup error: {e}")
-                
-                # Use LightRAG's built-in delete methods if available
-                if hasattr(rag_instance, 'adelete_entity') and entities_to_delete:
-                    print(f"Using LightRAG's adelete_entity for {len(entities_to_delete)} entities")
-                    for entity in entities_to_delete:
-                        try:
-                            await rag_instance.adelete_entity(entity)
-                            deleted_entities += 1
-                        except Exception as e:
-                            print(f"Error deleting entity {entity}: {e}")
-                
-                print(f"Graph cleanup completed. Deleted {deleted_entities} entities and {deleted_relationships} relationships")
-                
-                # CRITICAL: Save the modified graph to disk so WebUI can see the changes
-                working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
-                
-                # Save the graph using NetworkX
-                try:
-                    nx.write_graphml(graph, graphml_path)
-                    print(f"Saved updated graph to {graphml_path}")
-                except Exception as e:
-                    print(f"Error saving graph with NetworkX: {e}")
-                
-                # Also try to save using the storage's save method
-                if hasattr(rag_instance.graph_storage, 'save'):
-                    try:
-                        await rag_instance.graph_storage.save()
-                        print("Saved graph using graph_storage.save()")
-                    except Exception as e:
-                        print(f"Error with graph_storage.save(): {e}")
-                
-                # If the storage has a sync save method, try that too
-                if hasattr(rag_instance.graph_storage, '_save'):
-                    try:
-                        rag_instance.graph_storage._save()
-                        print("Saved graph using graph_storage._save()")
-                    except Exception as e:
-                        print(f"Error with graph_storage._save(): {e}")
-                
-            except Exception as e:
-                print(f"Error with graph storage cleanup: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # 7. Clear and update vector database JSON files (critical for WebUI)
         working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
         
-        # Handle vector database files
-        vdb_files = {
-            "vdb_entities.json": entities_to_delete if 'entities_to_delete' in locals() else set(),
-            "vdb_relationships.json": relationships_to_delete if 'relationships_to_delete' in locals() else set(),
-            "vdb_chunks.json": all_doc_id_patterns
-        }
+        # Step 1: Clean vector databases FIRST
+        # This is important because the graph might reference these
+        vdb_files = ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]
         
-        for vdb_file, items_to_remove in vdb_files.items():
+        entities_to_remove = set()
+        relationships_to_remove = set()
+        
+        for vdb_file in vdb_files:
             vdb_path = os.path.join(working_dir, vdb_file)
-            if os.path.exists(vdb_path) and items_to_remove:
+            if os.path.exists(vdb_path):
                 try:
                     with open(vdb_path, 'r') as f:
                         vdb_data = json.load(f)
                     
                     if 'data' in vdb_data and isinstance(vdb_data['data'], list):
                         original_count = len(vdb_data['data'])
+                        filtered_data = []
                         
-                        # Filter out entries related to deleted documents
-                        if vdb_file == "vdb_entities.json":
-                            # Remove entities by ID
-                            vdb_data['data'] = [
-                                entry for entry in vdb_data['data'] 
-                                if entry.get('id') not in items_to_remove
-                            ]
-                        elif vdb_file == "vdb_relationships.json":
-                            # Remove relationships by source/target pairs
-                            vdb_data['data'] = [
-                                entry for entry in vdb_data['data']
-                                if (entry.get('source'), entry.get('target')) not in items_to_remove
-                            ]
-                        elif vdb_file == "vdb_chunks.json":
-                            # Remove chunks by document ID patterns
-                            filtered_data = []
-                            for entry in vdb_data['data']:
-                                doc_id = entry.get('doc_id', '')
-                                source_id = entry.get('source_id', '')
-                                should_keep = True
-                                
-                                for pattern in items_to_remove:
-                                    if (doc_id == pattern or 
-                                        pattern in doc_id or
-                                        source_id == pattern or
-                                        pattern in source_id):
-                                        should_keep = False
-                                        break
-                                
-                                if should_keep:
-                                    filtered_data.append(entry)
+                        for entry in vdb_data['data']:
+                            should_remove = False
                             
-                            vdb_data['data'] = filtered_data
+                            # Check various fields for document references
+                            for field in ['doc_id', 'source_id', 'file_path', 'chunk_id']:
+                                value = entry.get(field, '')
+                                for pattern in all_doc_id_patterns:
+                                    if pattern in str(value):
+                                        should_remove = True
+                                        
+                                        # Track what we're removing for graph cleanup
+                                        if vdb_file == "vdb_entities.json":
+                                            entities_to_remove.add(entry.get('id', ''))
+                                        elif vdb_file == "vdb_relationships.json":
+                                            src = entry.get('source', '')
+                                            tgt = entry.get('target', '')
+                                            if src and tgt:
+                                                relationships_to_remove.add((src, tgt))
+                                        break
+                                if should_remove:
+                                    break
+                            
+                            if not should_remove:
+                                filtered_data.append(entry)
                         
-                        # Update the matrix if it exists (for embeddings)
-                        if 'matrix' in vdb_data and len(vdb_data['data']) != original_count:
-                            # Clear the matrix - it will be rebuilt when needed
+                        vdb_data['data'] = filtered_data
+                        
+                        # Clear matrix if data changed
+                        if len(filtered_data) != original_count and 'matrix' in vdb_data:
                             vdb_data['matrix'] = []
                         
-                        # Save the updated file
+                        # Save immediately
                         with open(vdb_path, 'w') as f:
                             json.dump(vdb_data, f, indent=2)
                         
-                        removed_count = original_count - len(vdb_data['data'])
-                        print(f"Updated {vdb_file}: removed {removed_count} entries")
+                        removed = original_count - len(filtered_data)
+                        print(f"Removed {removed} entries from {vdb_file}")
                         
                 except Exception as e:
                     print(f"Error updating {vdb_file}: {e}")
         
-        # 8. Clear LLM response cache
+        # Step 2: Clean the in-memory graph
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            
+            # Find all nodes and edges to remove
+            nodes_to_remove = set()
+            edges_to_remove = set()
+            
+            # Check all nodes
+            for node_id, node_data in list(graph.nodes(data=True)):
+                source_id = node_data.get('source_id', '')
+                file_path = node_data.get('file_path', '')
+                
+                for pattern in all_doc_id_patterns:
+                    if pattern in source_id or pattern in file_path:
+                        nodes_to_remove.add(node_id)
+                        break
+            
+            # Check all edges
+            for src, tgt, edge_data in list(graph.edges(data=True)):
+                # Remove if either node is being removed
+                if src in nodes_to_remove or tgt in nodes_to_remove:
+                    edges_to_remove.add((src, tgt))
+                    continue
+                
+                # Check edge's source_id
+                source_id = edge_data.get('source_id', '')
+                for pattern in all_doc_id_patterns:
+                    if pattern in source_id:
+                        edges_to_remove.add((src, tgt))
+                        break
+            
+            # Remove edges first
+            for src, tgt in edges_to_remove:
+                try:
+                    graph.remove_edge(src, tgt)
+                except:
+                    pass
+            
+            # Remove nodes
+            for node in nodes_to_remove:
+                try:
+                    graph.remove_node(node)
+                except:
+                    pass
+            
+            print(f"Removed {len(nodes_to_remove)} nodes and {len(edges_to_remove)} edges from graph")
+            
+            # Step 3: Save the graph multiple ways to ensure persistence
+            graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+            
+            # Method 1: Direct NetworkX save
+            try:
+                nx.write_graphml(graph, graphml_path)
+                print(f"Saved graph using NetworkX to {graphml_path}")
+            except Exception as e:
+                print(f"Error saving with NetworkX: {e}")
+            
+            # Method 2: Use graph storage save methods
+            if hasattr(rag_instance, 'graph_storage'):
+                try:
+                    if hasattr(rag_instance.graph_storage, 'save'):
+                        await rag_instance.graph_storage.save()
+                        print("Saved using graph_storage.save()")
+                    elif hasattr(rag_instance.graph_storage, '_save'):
+                        rag_instance.graph_storage._save()
+                        print("Saved using graph_storage._save()")
+                except Exception as e:
+                    print(f"Error with graph storage save: {e}")
+        
+        # Step 4: Clean other storages
+        # Clean KV storage
+        if hasattr(rag_instance, 'kv_storage'):
+            try:
+                for doc_id in doc_ids:
+                    await rag_instance.kv_storage.delete({doc_id})
+                
+                # Also clean chunks
+                if hasattr(rag_instance.kv_storage, 'get_all'):
+                    all_data = await rag_instance.kv_storage.get_all()
+                    keys_to_delete = set()
+                    for key in all_data.keys():
+                        for pattern in all_doc_id_patterns:
+                            if pattern in key:
+                                keys_to_delete.add(key)
+                                break
+                    if keys_to_delete:
+                        await rag_instance.kv_storage.delete(keys_to_delete)
+            except Exception as e:
+                print(f"Error cleaning KV storage: {e}")
+        
+        # Clean doc status
+        if hasattr(rag_instance, 'doc_status'):
+            try:
+                await rag_instance.doc_status.delete(set(doc_ids))
+            except Exception as e:
+                print(f"Error cleaning doc status: {e}")
+        
+        # Step 5: Clear any caches
         if hasattr(rag_instance, 'llm_response_cache'):
             try:
-                print("Clearing LLM response cache...")
                 await rag_instance.aclear_cache()
             except Exception as e:
                 print(f"Error clearing cache: {e}")
         
-        # 9. If all else fails, try using LightRAG's delete_by_doc_id method
-        # This might handle some cleanup we missed
-        try:
-            if hasattr(rag_instance, 'adelete_by_doc_id'):
-                print("Running LightRAG's built-in delete_by_doc_id as final cleanup...")
-                await rag_instance.adelete_by_doc_id(doc_ids)
-        except Exception as e:
-            print(f"Error with built-in delete method: {e}")
+        # Step 6: Final verification and persistence
+        # Make sure all JSON files are saved
+        json_files = ["kv_store_full_docs.json", "kv_store_text_chunks.json", "doc_status.json"]
+        for json_file in json_files:
+            file_path = os.path.join(working_dir, json_file)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                    
+                    # Remove any entries related to deleted docs
+                    if isinstance(data, dict):
+                        keys_to_remove = []
+                        for key in data.keys():
+                            for pattern in all_doc_id_patterns:
+                                if pattern in key:
+                                    keys_to_remove.append(key)
+                                    break
+                        
+                        for key in keys_to_remove:
+                            data.pop(key, None)
+                        
+                        with open(file_path, 'w') as f:
+                            json.dump(data, f, indent=2)
+                except Exception as e:
+                    print(f"Error cleaning {json_file}: {e}")
         
-        # 10. Final save attempt to ensure all changes are persisted
-        try:
-            # Force save all storages
-            if hasattr(rag_instance, 'graph_storage'):
-                if hasattr(rag_instance.graph_storage, 'save'):
-                    await rag_instance.graph_storage.save()
-                elif hasattr(rag_instance.graph_storage, '_save'):
-                    rag_instance.graph_storage._save()
-            
-            # Save the graph one more time to be absolutely sure
-            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph = rag_instance.chunk_entity_relation_graph
-                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
-                nx.write_graphml(graph, graphml_path)
-                print(f"Final save of graph to {graphml_path}")
-                
-        except Exception as e:
-            print(f"Error in final save attempt: {e}")
-        
-        print(f"Cleanup completed. Summary:")
-        print(f"  - Deleted {deleted_vectors} vector entries")
-        print(f"  - Deleted {deleted_kvs} KV entries")
-        print(f"  - Deleted {deleted_entities} graph entities")
-        print(f"  - Deleted {deleted_relationships} graph relationships")
-        print(f"  - Updated vector database JSON files")
-        print(f"  - Saved changes to GraphML file")
+        print("Enhanced cleanup completed successfully")
         
     except Exception as e:
-        print(f"Critical error in cleanup_all_document_traces: {e}")
+        print(f"Critical error in enhanced cleanup: {e}")
         import traceback
         traceback.print_exc()
         raise
