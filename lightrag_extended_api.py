@@ -105,6 +105,10 @@ def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
 async def cleanup_all_document_traces(doc_ids: List[str]):
     """Clean up all traces of documents from all LightRAG storage components"""
     try:
+        # Track entities and relationships to remove from graph
+        entities_to_remove = set()
+        relationships_to_remove = set()
+        
         # 1. Delete from vector storage
         if hasattr(rag_instance, 'vector_storage') and rag_instance.vector_storage:
             try:
@@ -115,37 +119,77 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
             except Exception as e:
                 print(f"Error deleting from vector storage: {e}")
         
-        # 2. Delete from KV storage (full documents and chunks)
-        chunks_to_process = []
+        # 2. Delete from KV storage (full documents and chunks) and collect entities/relationships
         if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
             try:
-                # Delete full documents
-                for doc_id in doc_ids:
-                    await rag_instance.kv_storage.delete({doc_id})
-                    
-                # Find and delete text chunks
-                if hasattr(rag_instance.kv_storage, '_data'):
-                    keys_to_delete = []
+                # First, collect entities and relationships from chunks before deleting
+                chunks_to_delete = []
+                
+                # Find all chunks for the documents
+                if hasattr(rag_instance.kv_storage, 'get_all'):
+                    all_data = await rag_instance.kv_storage.get_all()
+                    for key, value in all_data.items():
+                        for doc_id in doc_ids:
+                            if key.startswith(f"chunk-{doc_id}"):
+                                chunks_to_delete.append(key)
+                                # Extract entities and relationships from chunk
+                                if isinstance(value, dict):
+                                    # Get entities from the chunk
+                                    if 'entities' in value:
+                                        for entity in value['entities']:
+                                            if isinstance(entity, dict) and 'entity_name' in entity:
+                                                entities_to_remove.add(entity['entity_name'])
+                                            elif isinstance(entity, str):
+                                                entities_to_remove.add(entity)
+                                    
+                                    # Get relationships from the chunk
+                                    if 'relationships' in value:
+                                        for rel in value['relationships']:
+                                            if isinstance(rel, dict):
+                                                # Store as tuple (source, target, description)
+                                                src = rel.get('src_id') or rel.get('source')
+                                                tgt = rel.get('tgt_id') or rel.get('target')
+                                                if src and tgt:
+                                                    relationships_to_remove.add((src, tgt))
+                
+                elif hasattr(rag_instance.kv_storage, '_data'):
+                    # Alternative approach for different storage implementations
                     for key in list(rag_instance.kv_storage._data.keys()):
                         for doc_id in doc_ids:
                             if key.startswith(f"chunk-{doc_id}"):
-                                keys_to_delete.append(key)
-                                chunks_to_process.append(key)
-                    if keys_to_delete:
-                        await rag_instance.kv_storage.delete(set(keys_to_delete))
-                        
-                # Alternative method: Try to get chunks through get_all
-                elif hasattr(rag_instance.kv_storage, 'get_all'):
-                    all_data = await rag_instance.kv_storage.get_all()
-                    keys_to_delete = []
-                    for key in all_data.keys():
-                        for doc_id in doc_ids:
-                            if key.startswith(f"chunk-{doc_id}"):
-                                keys_to_delete.append(key)
-                                chunks_to_process.append(key)
-                    if keys_to_delete:
-                        await rag_instance.kv_storage.delete(set(keys_to_delete))
-                        
+                                chunks_to_delete.append(key)
+                                # Try to get chunk data
+                                try:
+                                    chunk_data = rag_instance.kv_storage._data[key]
+                                    if isinstance(chunk_data, dict):
+                                        # Extract entities
+                                        if 'entities' in chunk_data:
+                                            for entity in chunk_data['entities']:
+                                                if isinstance(entity, dict) and 'entity_name' in entity:
+                                                    entities_to_remove.add(entity['entity_name'])
+                                                elif isinstance(entity, str):
+                                                    entities_to_remove.add(entity)
+                                        
+                                        # Extract relationships
+                                        if 'relationships' in chunk_data:
+                                            for rel in chunk_data['relationships']:
+                                                if isinstance(rel, dict):
+                                                    src = rel.get('src_id') or rel.get('source')
+                                                    tgt = rel.get('tgt_id') or rel.get('target')
+                                                    if src and tgt:
+                                                        relationships_to_remove.add((src, tgt))
+                                except Exception as e:
+                                    print(f"Error extracting entities from chunk {key}: {e}")
+                
+                # Delete full documents
+                for doc_id in doc_ids:
+                    await rag_instance.kv_storage.delete({doc_id})
+                
+                # Delete chunks
+                if chunks_to_delete:
+                    await rag_instance.kv_storage.delete(set(chunks_to_delete))
+                    print(f"Deleted {len(chunks_to_delete)} chunks")
+                    
             except Exception as e:
                 print(f"Error deleting from KV storage: {e}")
         
@@ -158,118 +202,60 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
         
         # 4. Clean up graph storage (entities and relationships from these documents)
         if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            removed_entities = 0
+            removed_relationships = 0
+            
             try:
-                graph = rag_instance.chunk_entity_relation_graph
-                nodes_to_remove = set()
-                edges_to_remove = set()
+                # Remove relationships first (before removing nodes)
+                for src, tgt in relationships_to_remove:
+                    try:
+                        if hasattr(graph, 'has_edge') and graph.has_edge(src, tgt):
+                            if hasattr(graph, 'remove_edge'):
+                                graph.remove_edge(src, tgt)
+                                removed_relationships += 1
+                    except Exception as e:
+                        print(f"Error removing edge ({src}, {tgt}): {e}")
                 
-                # For NetworkX-based graph storage
-                if hasattr(graph, 'nodes') and hasattr(graph, 'edges'):
-                    # Find nodes that belong to deleted documents
-                    for node in list(graph.nodes()):
-                        node_data = graph.nodes[node] if hasattr(graph.nodes, '__getitem__') else {}
-                        
-                        # Check if node has source information linking to deleted documents
-                        source_id = node_data.get('source_id', '')
-                        chunk_id = node_data.get('chunk_id', '')
-                        doc_id = node_data.get('doc_id', '')
-                        
-                        # Check if this node belongs to any deleted document
-                        for deleted_doc_id in doc_ids:
-                            if (deleted_doc_id in str(source_id) or 
-                                deleted_doc_id in str(chunk_id) or
-                                deleted_doc_id in str(doc_id) or
-                                any(deleted_doc_id in chunk for chunk in chunks_to_process if chunk in str(node_data))):
-                                nodes_to_remove.add(node)
-                                break
-                    
-                    # Find edges connected to nodes being removed
-                    for edge in list(graph.edges()):
-                        if edge[0] in nodes_to_remove or edge[1] in nodes_to_remove:
-                            edges_to_remove.add(edge)
-                    
-                    # Also check edges for source information
-                    for edge in list(graph.edges()):
-                        if edge not in edges_to_remove:
-                            edge_data = graph.edges[edge] if hasattr(graph.edges, '__getitem__') else {}
-                            source_id = edge_data.get('source_id', '')
-                            chunk_id = edge_data.get('chunk_id', '')
-                            doc_id = edge_data.get('doc_id', '')
+                # Remove entities (nodes)
+                for entity in entities_to_remove:
+                    try:
+                        if hasattr(graph, 'has_node') and graph.has_node(entity):
+                            # Check if this entity is still referenced by other documents
+                            # by checking if it has any remaining edges
+                            has_edges = False
+                            if hasattr(graph, 'degree'):
+                                try:
+                                    has_edges = graph.degree(entity) > 0
+                                except:
+                                    has_edges = False
                             
-                            for deleted_doc_id in doc_ids:
-                                if (deleted_doc_id in str(source_id) or 
-                                    deleted_doc_id in str(chunk_id) or
-                                    deleted_doc_id in str(doc_id)):
-                                    edges_to_remove.add(edge)
-                                    break
-                    
-                    # Remove edges first (to avoid issues with removing nodes that have edges)
-                    if hasattr(graph, 'remove_edges_from'):
-                        graph.remove_edges_from(list(edges_to_remove))
-                    elif hasattr(graph, 'remove_edge'):
-                        for edge in edges_to_remove:
-                            try:
-                                graph.remove_edge(edge[0], edge[1])
-                            except:
-                                pass
-                    
-                    # Remove nodes
-                    if hasattr(graph, 'remove_nodes_from'):
-                        graph.remove_nodes_from(list(nodes_to_remove))
-                    elif hasattr(graph, 'remove_node'):
-                        for node in nodes_to_remove:
-                            try:
-                                graph.remove_node(node)
-                            except:
-                                pass
-                    
-                    print(f"Removed {len(nodes_to_remove)} nodes and {len(edges_to_remove)} edges from graph")
+                            # Only remove if no edges remain (not referenced by other docs)
+                            if not has_edges and hasattr(graph, 'remove_node'):
+                                graph.remove_node(entity)
+                                removed_entities += 1
+                    except Exception as e:
+                        print(f"Error removing node {entity}: {e}")
                 
-                # For other graph storage types (Neo4j, etc.)
-                elif hasattr(rag_instance, 'graph_storage'):
-                    graph_storage = rag_instance.graph_storage
+                print(f"Graph cleanup: removed {removed_entities} entities and {removed_relationships} relationships")
+                
+                # If graph storage has a save or commit method, call it
+                if hasattr(graph, 'save'):
+                    await graph.save() if asyncio.iscoroutinefunction(graph.save) else graph.save()
+                elif hasattr(rag_instance, 'graph_storage') and hasattr(rag_instance.graph_storage, 'save'):
+                    await rag_instance.graph_storage.save() if asyncio.iscoroutinefunction(rag_instance.graph_storage.save) else rag_instance.graph_storage.save()
                     
-                    # Try to use graph storage specific methods
-                    if hasattr(graph_storage, 'delete_nodes_by_doc_id'):
-                        for doc_id in doc_ids:
-                            await graph_storage.delete_nodes_by_doc_id(doc_id)
-                    
-                    # Try generic delete methods
-                    elif hasattr(graph_storage, 'delete_node'):
-                        # This is more complex as we need to find nodes first
-                        # Try to get all nodes and filter
-                        if hasattr(graph_storage, 'get_all_nodes'):
-                            all_nodes = await graph_storage.get_all_nodes()
-                            for node in all_nodes:
-                                node_data = node if isinstance(node, dict) else {}
-                                for deleted_doc_id in doc_ids:
-                                    if deleted_doc_id in str(node_data):
-                                        await graph_storage.delete_node(node.get('id', node))
-                                        break
-                                        
             except Exception as e:
                 print(f"Error with graph storage cleanup: {e}")
-                import traceback
-                traceback.print_exc()
         
         # 5. Clear any caches that might contain document data
         if hasattr(rag_instance, 'llm_response_cache'):
             try:
                 # Clear cache entries related to these documents
+                # This is a simple approach - in production you might want more granular control
                 await rag_instance.aclear_cache()
             except Exception as e:
                 print(f"Error clearing cache: {e}")
-        
-        # 6. If using separate graph storage, try to clean that up too
-        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
-            try:
-                # For Neo4j or other external graph databases
-                if hasattr(rag_instance.graph_storage, 'delete_by_doc_ids'):
-                    await rag_instance.graph_storage.delete_by_doc_ids(doc_ids)
-                elif hasattr(rag_instance.graph_storage, 'cleanup_documents'):
-                    await rag_instance.graph_storage.cleanup_documents(doc_ids)
-            except Exception as e:
-                print(f"Error cleaning external graph storage: {e}")
                 
     except Exception as e:
         print(f"Error in cleanup_all_document_traces: {e}")
@@ -633,6 +619,65 @@ async def update_relation(request: RelationUpdateRequest):
         print(traceback.format_exc())
         raise HTTPException(
             status_code=500, detail=f"Error updating relation: {str(e)}"
+        )
+
+@app.post("/graph/cleanup")
+async def cleanup_orphaned_entities():
+    """
+    Clean up orphaned entities in the knowledge graph (entities with no relationships).
+    This is useful for maintenance after deleting documents.
+    
+    Returns:
+        Dict: Cleanup summary with number of entities removed
+    """
+    try:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            orphaned_entities = []
+            
+            # Find entities with no edges
+            if hasattr(graph, 'nodes') and hasattr(graph, 'degree'):
+                for node in list(graph.nodes()):
+                    try:
+                        # Check if node has any edges
+                        if graph.degree(node) == 0:
+                            orphaned_entities.append(node)
+                    except Exception as e:
+                        print(f"Error checking node {node}: {e}")
+            
+            # Remove orphaned entities
+            removed_count = 0
+            for entity in orphaned_entities:
+                try:
+                    if hasattr(graph, 'remove_node'):
+                        graph.remove_node(entity)
+                        removed_count += 1
+                except Exception as e:
+                    print(f"Error removing orphaned entity {entity}: {e}")
+            
+            # Save graph if possible
+            if hasattr(graph, 'save'):
+                await graph.save() if asyncio.iscoroutinefunction(graph.save) else graph.save()
+            elif hasattr(rag_instance, 'graph_storage') and hasattr(rag_instance.graph_storage, 'save'):
+                await rag_instance.graph_storage.save() if asyncio.iscoroutinefunction(rag_instance.graph_storage.save) else rag_instance.graph_storage.save()
+            
+            return {
+                "status": "success",
+                "message": f"Cleaned up {removed_count} orphaned entities",
+                "orphaned_entities_found": len(orphaned_entities),
+                "orphaned_entities_removed": removed_count
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Graph storage not available"
+            }
+            
+    except Exception as e:
+        print(f"Error in graph cleanup: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500, detail=f"Error during graph cleanup: {str(e)}"
         )
 
 @app.post("/documents/text/enhanced")
