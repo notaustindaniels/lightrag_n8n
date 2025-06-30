@@ -6,6 +6,7 @@ import os
 import asyncio
 import hashlib
 import json
+import networkx as nx
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from urllib.parse import urlparse
@@ -17,6 +18,8 @@ from pydantic import BaseModel, Field
 import uvicorn
 from contextlib import asynccontextmanager
 import traceback
+import shutil
+import time
 
 # Import LightRAG components
 from lightrag import LightRAG, QueryParam
@@ -102,68 +105,297 @@ def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
     else:
         return f"text/{doc_id[:8]}..."
 
-async def cleanup_all_document_traces(doc_ids: List[str]):
-    """Clean up all traces of documents from all LightRAG storage components"""
+def force_save_graph_to_disk(graph, working_dir):
+    """Force save graph to disk with multiple fallback methods"""
+    graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+    
     try:
-        # 1. Delete from vector storage
-        if hasattr(rag_instance, 'vector_storage') and rag_instance.vector_storage:
-            try:
-                # Try to delete vectors associated with the document IDs
-                for doc_id in doc_ids:
-                    # LightRAG stores vectors with chunk IDs, we need to find all chunks
-                    await rag_instance.vector_storage.delete_by_doc_id(doc_id)
-            except Exception as e:
-                print(f"Error deleting from vector storage: {e}")
+        # Method 1: Direct NetworkX write
+        nx.write_graphml(graph, graphml_path)
+        print(f"Saved graph to {graphml_path} using NetworkX")
         
-        # 2. Delete from KV storage (full documents and chunks)
-        if hasattr(rag_instance, 'kv_storage') and rag_instance.kv_storage:
-            try:
-                # Delete full documents
-                for doc_id in doc_ids:
-                    await rag_instance.kv_storage.delete({doc_id})
+        # Verify the file was written
+        if os.path.exists(graphml_path):
+            file_size = os.path.getsize(graphml_path)
+            print(f"GraphML file size: {file_size} bytes")
+            
+            # Double-check by reading it back
+            test_graph = nx.read_graphml(graphml_path)
+            print(f"Verified: graph has {test_graph.number_of_nodes()} nodes and {test_graph.number_of_edges()} edges")
+        
+        return True
+    except Exception as e:
+        print(f"Error in force_save_graph_to_disk: {e}")
+        
+        # Fallback: Write to temp file and move
+        try:
+            temp_path = graphml_path + ".tmp"
+            nx.write_graphml(graph, temp_path)
+            shutil.move(temp_path, graphml_path)
+            print(f"Saved graph using temp file method")
+            return True
+        except Exception as e2:
+            print(f"Error in temp file method: {e2}")
+            return False
+
+async def cleanup_all_document_traces(doc_ids: List[str]):
+    """Enhanced cleanup that ensures all traces are removed and properly persisted"""
+    try:
+        print(f"Starting enhanced cleanup for documents: {doc_ids}")
+        
+        # Create a set of all possible document ID formats to check
+        all_doc_id_patterns = set()
+        for doc_id in doc_ids:
+            all_doc_id_patterns.add(doc_id)
+            if doc_id.startswith('[') and ']' in doc_id:
+                parts = doc_id.split('] ', 1)
+                if len(parts) == 2:
+                    domain_part = parts[0] + ']'
+                    all_doc_id_patterns.add(domain_part)
+        
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        
+        # Step 1: Clean vector databases FIRST and SAVE IMMEDIATELY
+        vdb_files = ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]
+        
+        entities_to_remove = set()
+        relationships_to_remove = set()
+        
+        for vdb_file in vdb_files:
+            vdb_path = os.path.join(working_dir, vdb_file)
+            if os.path.exists(vdb_path):
+                try:
+                    # Read the file
+                    with open(vdb_path, 'r') as f:
+                        vdb_data = json.load(f)
                     
-                # Delete text chunks - LightRAG stores chunks with keys like "chunk-{doc_id}-{chunk_index}"
-                # We need to find and delete all chunks for each document
-                if hasattr(rag_instance.kv_storage, '_data'):
-                    keys_to_delete = []
-                    for key in rag_instance.kv_storage._data.keys():
-                        for doc_id in doc_ids:
-                            if key.startswith(f"chunk-{doc_id}"):
-                                keys_to_delete.append(key)
+                    if 'data' in vdb_data and isinstance(vdb_data['data'], list):
+                        original_count = len(vdb_data['data'])
+                        filtered_data = []
+                        
+                        for entry in vdb_data['data']:
+                            should_remove = False
+                            
+                            # Check various fields for document references
+                            for field in ['doc_id', 'source_id', 'file_path', 'chunk_id']:
+                                value = entry.get(field, '')
+                                for pattern in all_doc_id_patterns:
+                                    if pattern in str(value):
+                                        should_remove = True
+                                        
+                                        # Track what we're removing for graph cleanup
+                                        if vdb_file == "vdb_entities.json":
+                                            entities_to_remove.add(entry.get('id', ''))
+                                        elif vdb_file == "vdb_relationships.json":
+                                            src = entry.get('source', '')
+                                            tgt = entry.get('target', '')
+                                            if src and tgt:
+                                                relationships_to_remove.add((src, tgt))
+                                        break
+                                if should_remove:
+                                    break
+                            
+                            if not should_remove:
+                                filtered_data.append(entry)
+                        
+                        vdb_data['data'] = filtered_data
+                        
+                        # Clear matrix if data changed
+                        if len(filtered_data) != original_count:
+                            vdb_data['matrix'] = []
+                        
+                        # Save immediately with backup
+                        backup_path = vdb_path + ".backup"
+                        shutil.copy2(vdb_path, backup_path)
+                        
+                        with open(vdb_path, 'w') as f:
+                            json.dump(vdb_data, f, indent=2)
+                        
+                        # Verify the write
+                        with open(vdb_path, 'r') as f:
+                            verify_data = json.load(f)
+                            if len(verify_data.get('data', [])) == len(filtered_data):
+                                os.remove(backup_path)  # Remove backup if successful
+                                print(f"Successfully updated {vdb_file}, removed {original_count - len(filtered_data)} entries")
+                            else:
+                                shutil.move(backup_path, vdb_path)  # Restore backup
+                                raise Exception("Verification failed after write")
+                        
+                except Exception as e:
+                    print(f"Error updating {vdb_file}: {e}")
+        
+        # Step 2: Clean the in-memory graph AND SAVE IMMEDIATELY
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            
+            # Get initial counts
+            initial_nodes = graph.number_of_nodes()
+            initial_edges = graph.number_of_edges()
+            
+            # Find all nodes and edges to remove
+            nodes_to_remove = set()
+            edges_to_remove = set()
+            
+            # Check all nodes
+            for node_id, node_data in list(graph.nodes(data=True)):
+                source_id = node_data.get('source_id', '')
+                file_path = node_data.get('file_path', '')
+                
+                for pattern in all_doc_id_patterns:
+                    if pattern in source_id or pattern in file_path:
+                        nodes_to_remove.add(node_id)
+                        break
+            
+            # Check all edges
+            for src, tgt, edge_data in list(graph.edges(data=True)):
+                # Remove if either node is being removed
+                if src in nodes_to_remove or tgt in nodes_to_remove:
+                    edges_to_remove.add((src, tgt))
+                    continue
+                
+                # Check edge's source_id
+                source_id = edge_data.get('source_id', '')
+                for pattern in all_doc_id_patterns:
+                    if pattern in source_id:
+                        edges_to_remove.add((src, tgt))
+                        break
+            
+            # Remove edges first
+            for src, tgt in edges_to_remove:
+                try:
+                    graph.remove_edge(src, tgt)
+                except:
+                    pass
+            
+            # Remove nodes
+            for node in nodes_to_remove:
+                try:
+                    graph.remove_node(node)
+                except:
+                    pass
+            
+            print(f"Removed {len(nodes_to_remove)} nodes and {len(edges_to_remove)} edges from graph")
+            print(f"Graph now has {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
+            
+            # Step 3: CRITICAL - Force save the graph multiple ways
+            graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+            
+            # Create backup before saving
+            if os.path.exists(graphml_path):
+                backup_path = graphml_path + ".backup"
+                shutil.copy2(graphml_path, backup_path)
+            
+            # Force save the graph
+            save_success = force_save_graph_to_disk(graph, working_dir)
+            
+            if save_success:
+                # Also try storage save methods
+                if hasattr(rag_instance, 'graph_storage'):
+                    try:
+                        if hasattr(rag_instance.graph_storage, 'save'):
+                            await rag_instance.graph_storage.save()
+                            print("Also saved using graph_storage.save()")
+                    except Exception as e:
+                        print(f"Note: graph_storage.save() failed but file was saved: {e}")
+                
+                # Update the graph storage's internal reference
+                if hasattr(rag_instance.graph_storage, '_graph'):
+                    rag_instance.graph_storage._graph = graph
+                elif hasattr(rag_instance.graph_storage, 'graph'):
+                    rag_instance.graph_storage.graph = graph
+        
+        # Step 4: Clean other JSON storage files
+        json_files_to_clean = {
+            "kv_store_full_docs.json": "doc_id",
+            "kv_store_text_chunks.json": "chunk_id",
+            "doc_status.json": "doc_id"
+        }
+        
+        for json_file, id_field in json_files_to_clean.items():
+            file_path = os.path.join(working_dir, json_file)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                    
+                    if isinstance(data, dict):
+                        keys_to_remove = []
+                        for key in data.keys():
+                            for pattern in all_doc_id_patterns:
+                                if pattern in key:
+                                    keys_to_remove.append(key)
+                                    break
+                        
+                        for key in keys_to_remove:
+                            data.pop(key, None)
+                        
+                        # Save with backup
+                        backup_path = file_path + ".backup"
+                        shutil.copy2(file_path, backup_path)
+                        
+                        with open(file_path, 'w') as f:
+                            json.dump(data, f, indent=2)
+                        
+                        os.remove(backup_path)
+                        print(f"Cleaned {len(keys_to_remove)} entries from {json_file}")
+                        
+                except Exception as e:
+                    print(f"Error cleaning {json_file}: {e}")
+        
+        # Step 5: Clean KV storage if available
+        if hasattr(rag_instance, 'kv_storage'):
+            try:
+                # Delete by doc_ids
+                await rag_instance.kv_storage.delete(set(doc_ids))
+                
+                # Also clean any chunks
+                if hasattr(rag_instance.kv_storage, 'get_all'):
+                    all_data = await rag_instance.kv_storage.get_all()
+                    keys_to_delete = set()
+                    for key in all_data.keys():
+                        for pattern in all_doc_id_patterns:
+                            if pattern in key:
+                                keys_to_delete.add(key)
+                                break
                     if keys_to_delete:
-                        await rag_instance.kv_storage.delete(set(keys_to_delete))
+                        await rag_instance.kv_storage.delete(keys_to_delete)
+                        print(f"Deleted {len(keys_to_delete)} keys from KV storage")
             except Exception as e:
-                print(f"Error deleting from KV storage: {e}")
+                print(f"Error cleaning KV storage: {e}")
         
-        # 3. Delete from doc status storage
-        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status:
+        # Step 6: Clean doc status
+        if hasattr(rag_instance, 'doc_status'):
             try:
-                await rag_instance.doc_status.delete({doc_id for doc_id in doc_ids})
+                await rag_instance.doc_status.delete(set(doc_ids))
             except Exception as e:
-                print(f"Error deleting from doc status storage: {e}")
+                print(f"Error cleaning doc status: {e}")
         
-        # 4. Clean up graph storage (entities and relationships from these documents)
-        if hasattr(rag_instance, 'graph_storage') and rag_instance.graph_storage:
-            try:
-                # This is more complex as we need to identify which entities/relationships
-                # came from these documents. LightRAG may not track this directly.
-                # For now, we'll leave the graph as is, but in a production system,
-                # you might want to track document-entity mappings
-                pass
-            except Exception as e:
-                print(f"Error with graph storage cleanup: {e}")
-        
-        # 5. Clear any caches that might contain document data
+        # Step 7: Clear any caches
         if hasattr(rag_instance, 'llm_response_cache'):
             try:
-                # Clear cache entries related to these documents
-                # This is a simple approach - in production you might want more granular control
                 await rag_instance.aclear_cache()
+                print("Cleared LLM response cache")
             except Exception as e:
                 print(f"Error clearing cache: {e}")
-                
+        
+        # Step 8: Final verification - ensure files are actually updated
+        time.sleep(0.5)  # Small delay to ensure filesystem sync
+        
+        # Verify GraphML file
+        graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+        if os.path.exists(graphml_path):
+            try:
+                verify_graph = nx.read_graphml(graphml_path)
+                print(f"Final verification: GraphML has {verify_graph.number_of_nodes()} nodes and {verify_graph.number_of_edges()} edges")
+            except Exception as e:
+                print(f"Warning: Could not verify GraphML file: {e}")
+        
+        print("Enhanced cleanup completed successfully")
+        
     except Exception as e:
-        print(f"Error in cleanup_all_document_traces: {e}")
+        print(f"Critical error in enhanced cleanup: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 @asynccontextmanager
@@ -185,6 +417,20 @@ async def lifespan(app: FastAPI):
         except:
             metadata_store = {}
     
+    # Check if GraphML file exists and is valid
+    graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+    if os.path.exists(graphml_path):
+        try:
+            # Try to load it to check if it's valid
+            test_graph = nx.read_graphml(graphml_path)
+            print(f"Found existing graph with {test_graph.number_of_nodes()} nodes and {test_graph.number_of_edges()} edges")
+        except Exception as e:
+            print(f"Error reading existing GraphML file: {e}")
+            # Create an empty GraphML file
+            empty_graph = nx.Graph()
+            nx.write_graphml(empty_graph, graphml_path)
+            print("Created new empty GraphML file")
+    
     # Initialize LightRAG
     rag_instance = LightRAG(
         working_dir=working_dir,
@@ -198,6 +444,14 @@ async def lifespan(app: FastAPI):
     
     await rag_instance.initialize_storages()
     await initialize_pipeline_status()
+    
+    # Ensure the graph is properly loaded
+    if hasattr(rag_instance, 'graph_storage') and hasattr(rag_instance.graph_storage, 'load'):
+        try:
+            await rag_instance.graph_storage.load()
+            print("Graph storage loaded successfully")
+        except Exception as e:
+            print(f"Error loading graph storage: {e}")
     
     yield
     
@@ -525,6 +779,339 @@ async def update_relation(request: RelationUpdateRequest):
         raise HTTPException(
             status_code=500, detail=f"Error updating relation: {str(e)}"
         )
+
+@app.get("/graph/status")
+async def get_graph_status():
+    """Get the current status of the knowledge graph"""
+    try:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            
+            status = {
+                "exists": True,
+                "type": type(graph).__name__,
+                "nodes": graph.number_of_nodes() if hasattr(graph, 'number_of_nodes') else 0,
+                "edges": graph.number_of_edges() if hasattr(graph, 'number_of_edges') else 0,
+                "storage_type": type(rag_instance.graph_storage).__name__ if hasattr(rag_instance, 'graph_storage') else "Unknown"
+            }
+            
+            # Check all relevant files
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            
+            # Check GraphML file
+            graphml_file = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+            status["graphml_file_exists"] = os.path.exists(graphml_file)
+            if status["graphml_file_exists"]:
+                status["graphml_file_size"] = os.path.getsize(graphml_file)
+            
+            # Check vector database files
+            vector_db_files = {
+                "vdb_entities.json": "Entity embeddings",
+                "vdb_relationships.json": "Relationship embeddings",
+                "vdb_chunks.json": "Document chunk embeddings"
+            }
+            
+            status["vector_databases"] = {}
+            for file_name, description in vector_db_files.items():
+                file_path = os.path.join(working_dir, file_name)
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r') as f:
+                            data = json.load(f)
+                            entity_count = len(data.get('data', []))
+                            status["vector_databases"][file_name] = {
+                                "exists": True,
+                                "description": description,
+                                "size": os.path.getsize(file_path),
+                                "entity_count": entity_count
+                            }
+                    except Exception as e:
+                        status["vector_databases"][file_name] = {
+                            "exists": True,
+                            "error": str(e)
+                        }
+                else:
+                    status["vector_databases"][file_name] = {
+                        "exists": False,
+                        "description": description
+                    }
+            
+            # Sample some nodes if they exist
+            if status["nodes"] > 0 and hasattr(graph, 'nodes'):
+                sample_nodes = list(graph.nodes())[:5]
+                status["sample_nodes"] = sample_nodes
+            
+            # Total entity count from vector DBs
+            total_entities_in_vdbs = sum(
+                vdb.get("entity_count", 0) 
+                for vdb in status["vector_databases"].values() 
+                if "entity_count" in vdb
+            )
+            status["total_entities_in_vector_dbs"] = total_entities_in_vdbs
+            
+            return status
+        else:
+            return {
+                "exists": False,
+                "message": "Knowledge graph not initialized"
+            }
+            
+    except Exception as e:
+        print(f"Error getting graph status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/graph/clear")
+async def clear_knowledge_graph():
+    """Clear the entire knowledge graph"""
+    try:
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            
+            # Get node and edge counts before clearing
+            node_count = graph.number_of_nodes() if hasattr(graph, 'number_of_nodes') else 0
+            edge_count = graph.number_of_edges() if hasattr(graph, 'number_of_edges') else 0
+            
+            if hasattr(graph, 'clear'):
+                print(f"Clearing knowledge graph with {node_count} nodes and {edge_count} edges")
+                graph.clear()
+                
+                # Critical: Save the cleared graph to the GraphML file
+                working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+                
+                # Force save the cleared graph
+                force_save_graph_to_disk(graph, working_dir)
+                
+                # Also try the storage's save methods
+                if hasattr(rag_instance, 'graph_storage'):
+                    if hasattr(rag_instance.graph_storage, 'save'):
+                        try:
+                            await rag_instance.graph_storage.save()
+                            print("Also saved using graph_storage.save()")
+                        except Exception as e:
+                            print(f"Note: graph_storage.save() failed: {e}")
+                    
+                    if hasattr(rag_instance.graph_storage, '_save'):
+                        try:
+                            rag_instance.graph_storage._save()
+                            print("Also saved using graph_storage._save()")
+                        except Exception as e:
+                            print(f"Note: graph_storage._save() failed: {e}")
+                
+                # CRITICAL: Clear ALL graph-related and vector database files
+                files_to_clear = [
+                    # Graph files
+                    "graph_chunk_entity_relation.graphml",
+                    "graph_data.json",
+                    "graph_cache.json",
+                    # Vector database files - THESE ARE CRITICAL FOR WEBUI
+                    "vdb_entities.json",
+                    "vdb_relationships.json",
+                    "vdb_chunks.json",
+                    # Additional possible vector storage files
+                    "entity_embedding.json",
+                    "relationship_embedding.json",
+                    "document_graph_storage.json"
+                ]
+                
+                print(f"Clearing all graph and vector database files in {working_dir}")
+                
+                for file_name in files_to_clear:
+                    file_path = os.path.join(working_dir, file_name)
+                    if os.path.exists(file_path):
+                        try:
+                            if file_name.endswith('.graphml'):
+                                # Ensure GraphML file contains empty graph
+                                empty_graph = nx.Graph()
+                                nx.write_graphml(empty_graph, file_path)
+                                print(f"Wrote empty graph to {file_path}")
+                            elif file_name.startswith('vdb_'):
+                                # For vector database files, write the proper empty structure
+                                empty_vdb = {
+                                    "embedding_dim": 1536,  # Default OpenAI embedding dimension
+                                    "data": [],
+                                    "matrix": []
+                                }
+                                with open(file_path, 'w') as f:
+                                    json.dump(empty_vdb, f, indent=2)
+                                print(f"Cleared vector database: {file_path}")
+                            else:
+                                # Clear JSON files
+                                with open(file_path, 'w') as f:
+                                    json.dump({}, f)
+                                print(f"Cleared {file_path}")
+                        except Exception as e:
+                            print(f"Error handling {file_path}: {e}")
+                            # Try to delete the file if clearing fails
+                            try:
+                                os.remove(file_path)
+                                print(f"Deleted {file_path}")
+                            except Exception as del_e:
+                                print(f"Error deleting {file_path}: {del_e}")
+                
+                # Try to clear entity and relationship vector stores if accessible
+                possible_vdb_attrs = [
+                    'entities_vdb', 'relationships_vdb', 'chunks_vdb',
+                    'entity_vdb', 'relation_vdb', 'chunk_vdb'
+                ]
+                
+                for attr_name in possible_vdb_attrs:
+                    if hasattr(rag_instance, attr_name):
+                        vdb = getattr(rag_instance, attr_name)
+                        if vdb and hasattr(vdb, 'clear'):
+                            try:
+                                await vdb.clear()
+                                print(f"Cleared {attr_name}")
+                            except Exception as e:
+                                print(f"Error clearing {attr_name}: {e}")
+                
+                return {
+                    "status": "success",
+                    "message": "Knowledge graph and all vector databases cleared successfully",
+                    "cleared": {
+                        "nodes": node_count,
+                        "edges": edge_count,
+                        "files_cleared": files_to_clear
+                    }
+                }
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Graph clear method not available"
+                )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="Knowledge graph not found"
+            )
+            
+    except Exception as e:
+        print(f"Error clearing knowledge graph: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/graph/debug")
+async def debug_graph_sources():
+    """Debug endpoint to check all possible sources of graph data"""
+    try:
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        debug_info = {
+            "working_dir": working_dir,
+            "in_memory_graph": {},
+            "files": {},
+            "rag_attributes": []
+        }
+        
+        # Check in-memory graph
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            debug_info["in_memory_graph"] = {
+                "exists": True,
+                "nodes": graph.number_of_nodes() if hasattr(graph, 'number_of_nodes') else 0,
+                "edges": graph.number_of_edges() if hasattr(graph, 'number_of_edges') else 0,
+                "type": type(graph).__name__
+            }
+        else:
+            debug_info["in_memory_graph"]["exists"] = False
+        
+        # Check all potential files
+        files_to_check = [
+            "graph_chunk_entity_relation.graphml",
+            "vdb_entities.json",
+            "vdb_relationships.json",
+            "vdb_chunks.json",
+            "graph_data.json",
+            "kv_store_text_chunks.json",
+            "kv_store_full_docs.json",
+            "doc_status.json"
+        ]
+        
+        for file_name in files_to_check:
+            file_path = os.path.join(working_dir, file_name)
+            if os.path.exists(file_path):
+                file_info = {
+                    "exists": True,
+                    "size": os.path.getsize(file_path)
+                }
+                
+                # For JSON files, try to get entity count
+                if file_name.endswith('.json'):
+                    try:
+                        with open(file_path, 'r') as f:
+                            data = json.load(f)
+                            if isinstance(data, dict):
+                                if 'data' in data:
+                                    file_info["entity_count"] = len(data['data'])
+                                else:
+                                    file_info["key_count"] = len(data)
+                            elif isinstance(data, list):
+                                file_info["item_count"] = len(data)
+                    except Exception as e:
+                        file_info["read_error"] = str(e)
+                
+                debug_info["files"][file_name] = file_info
+            else:
+                debug_info["files"][file_name] = {"exists": False}
+        
+        # Check RAG instance attributes
+        for attr in dir(rag_instance):
+            if not attr.startswith('_') and ('vdb' in attr or 'vector' in attr or 'graph' in attr):
+                debug_info["rag_attributes"].append(attr)
+        
+        return debug_info
+        
+    except Exception as e:
+        print(f"Error in debug endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/graph/reload")
+async def reload_graph():
+    """Force reload the graph from the GraphML file"""
+    try:
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+        
+        if os.path.exists(graphml_path):
+            # Load the graph from file
+            loaded_graph = nx.read_graphml(graphml_path)
+            node_count = loaded_graph.number_of_nodes()
+            edge_count = loaded_graph.number_of_edges()
+            
+            # Replace the in-memory graph
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                rag_instance.chunk_entity_relation_graph = loaded_graph
+                
+                # Also update the graph storage's reference if it has one
+                if hasattr(rag_instance.graph_storage, '_graph'):
+                    rag_instance.graph_storage._graph = loaded_graph
+                elif hasattr(rag_instance.graph_storage, 'graph'):
+                    rag_instance.graph_storage.graph = loaded_graph
+                
+                return {
+                    "status": "success",
+                    "message": f"Graph reloaded from {graphml_path}",
+                    "nodes": node_count,
+                    "edges": edge_count
+                }
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not find graph reference in RAG instance"
+                )
+        else:
+            return {
+                "status": "warning",
+                "message": f"GraphML file not found at {graphml_path}",
+                "nodes": 0,
+                "edges": 0
+            }
+            
+    except Exception as e:
+        print(f"Error reloading graph: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
@@ -1047,10 +1634,15 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             print(f"Metadata keys to delete: {metadata_keys_to_delete}")
             
             # First clean up all document traces from LightRAG storages
+            # This will also clear and save the graph properly
             await cleanup_all_document_traces(unique_docs_to_delete)
             
             # Then call the standard delete method
-            await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
+            try:
+                await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
+            except Exception as e:
+                print(f"Error in adelete_by_doc_id: {e}")
+                # Continue even if this fails, as cleanup_all_document_traces should have done most of the work
             
             # Remove from metadata store using the correct keys
             for key in metadata_keys_to_delete:
@@ -1059,16 +1651,181 @@ async def delete_documents_by_sitemap(sitemap_url: str):
             
             # Save updated metadata
             save_metadata_store()
+            
+            # Force a final save of the graph to ensure persistence
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph = rag_instance.chunk_entity_relation_graph
+                force_save_graph_to_disk(graph, working_dir)
+            
+            # Also ensure all vector DB files are saved with proper structure
+            print("Ensuring all vector database files are properly saved...")
+            vdb_files = ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]
+            for file_name in vdb_files:
+                file_path = os.path.join(working_dir, file_name)
+                if os.path.exists(file_path):
+                    try:
+                        # Read and re-save to ensure it's properly formatted
+                        with open(file_path, 'r') as f:
+                            data = json.load(f)
+                        
+                        # Ensure proper structure
+                        if not isinstance(data, dict):
+                            data = {"embedding_dim": 1536, "data": [], "matrix": []}
+                        if 'data' not in data:
+                            data['data'] = []
+                        if 'matrix' not in data:
+                            data['matrix'] = []
+                        if 'embedding_dim' not in data:
+                            data['embedding_dim'] = 1536
+                            
+                        with open(file_path, 'w') as f:
+                            json.dump(data, f, indent=2)
+                        print(f"Verified and saved {file_name}")
+                    except Exception as e:
+                        print(f"Error verifying {file_name}: {e}")
+                        # Create empty structure if corrupted
+                        empty_structure = {"embedding_dim": 1536, "data": [], "matrix": []}
+                        with open(file_path, 'w') as f:
+                            json.dump(empty_structure, f, indent=2)
+                        print(f"Reset {file_name} to empty structure")
+            
+            # Force save all LightRAG storages
+            if hasattr(rag_instance, 'graph_storage'):
+                storage = rag_instance.graph_storage
+                if hasattr(storage, 'save'):
+                    try:
+                        await storage.save()
+                        print("Force saved graph storage")
+                    except Exception as e:
+                        print(f"Error force saving graph storage: {e}")
+                elif hasattr(storage, '_save'):
+                    try:
+                        storage._save()
+                        print("Force saved graph storage (sync)")
+                    except Exception as e:
+                        print(f"Error force saving graph storage (sync): {e}")
+            
+            # Small delay to ensure filesystem sync
+            time.sleep(0.5)
         
         return {
             "status": "success",
             "message": f"Deleted {len(metadata_keys_to_delete)} documents for sitemap {sitemap_url}",
             "deleted_count": len(metadata_keys_to_delete),
             "deleted_ids": unique_docs_to_delete if 'unique_docs_to_delete' in locals() else [],
-            "sitemap_url": sitemap_url
+            "sitemap_url": sitemap_url,
+            "graph_cleared": True
         }
         
     except Exception as e:
+        print(f"Error in delete_documents_by_sitemap: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/graph/force-clear-all")
+async def force_clear_all_graph_data():
+    """Force clear ALL graph and vector database files - nuclear option"""
+    try:
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        
+        # List of ALL files that might contain graph or entity data
+        files_to_delete = [
+            # Graph files
+            "graph_chunk_entity_relation.graphml",
+            "graph_data.json",
+            "graph_cache.json",
+            # Vector database files
+            "vdb_entities.json",
+            "vdb_relationships.json", 
+            "vdb_chunks.json",
+            # Key-value stores that might contain entities
+            "kv_store_text_chunks.json",
+            "kv_store_full_docs.json",
+            "kv_store_llm_response_cache.json",
+            # Document status
+            "doc_status.json",
+            # Any other potential files
+            "entity_embedding.json",
+            "relationship_embedding.json",
+            "document_graph_storage.json",
+            "entities.json",
+            "relationships.json",
+            "chunks.json"
+        ]
+        
+        deleted_files = []
+        errors = []
+        
+        # Clear in-memory graph
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph = rag_instance.chunk_entity_relation_graph
+            if hasattr(graph, 'clear'):
+                graph.clear()
+                print("Cleared in-memory graph")
+        
+        # Delete or clear all files
+        for file_name in files_to_delete:
+            file_path = os.path.join(working_dir, file_name)
+            if os.path.exists(file_path):
+                try:
+                    # For safety, rename to backup first
+                    backup_path = file_path + ".backup"
+                    os.rename(file_path, backup_path)
+                    
+                    # Create empty file based on type
+                    if file_name.endswith('.graphml'):
+                        empty_graph = nx.Graph()
+                        nx.write_graphml(empty_graph, file_path)
+                    elif file_name.startswith('vdb_'):
+                        # Vector database format
+                        empty_vdb = {
+                            "embedding_dim": 1536,
+                            "data": [],
+                            "matrix": []
+                        }
+                        with open(file_path, 'w') as f:
+                            json.dump(empty_vdb, f)
+                    else:
+                        # Empty JSON object
+                        with open(file_path, 'w') as f:
+                            json.dump({}, f)
+                    
+                    # Delete backup
+                    os.remove(backup_path)
+                    deleted_files.append(file_name)
+                    print(f"Cleared {file_name}")
+                    
+                except Exception as e:
+                    errors.append({"file": file_name, "error": str(e)})
+                    print(f"Error clearing {file_name}: {e}")
+        
+        # Clear metadata store
+        global metadata_store
+        metadata_store = {}
+        save_metadata_store()
+        
+        # Clear any caches
+        if hasattr(rag_instance, 'aclear_cache'):
+            try:
+                await rag_instance.aclear_cache()
+                print("Cleared LLM cache")
+            except Exception as e:
+                print(f"Error clearing cache: {e}")
+        
+        return {
+            "status": "success",
+            "message": "Force cleared all graph and vector database files",
+            "deleted_files": deleted_files,
+            "errors": errors,
+            "total_files_cleared": len(deleted_files)
+        }
+        
+    except Exception as e:
+        print(f"Error in force clear: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query")
