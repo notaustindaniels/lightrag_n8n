@@ -20,6 +20,20 @@ from contextlib import asynccontextmanager
 import traceback
 import shutil
 import time
+import mimetypes
+import io
+import chardet
+
+# Document parsing imports
+import docx
+import pypdf
+import pptx
+from bs4 import BeautifulSoup
+import ebooklib
+from ebooklib import epub
+import yaml
+import csv
+import magic
 
 # Import LightRAG components
 from lightrag import LightRAG, QueryParam
@@ -83,6 +97,52 @@ class RelationUpdateRequest(BaseModel):
 rag_instance = None
 metadata_store = {}  # In-memory metadata store
 
+# Supported file extensions
+SUPPORTED_EXTENSIONS = {
+    'txt', 'md', 'docx', 'pdf', 'pptx', 'rtf', 'odt', 'epub', 
+    'html', 'htm', 'tex', 'json', 'xml', 'yaml', 'yml', 'csv', 
+    'log', 'conf', 'ini', 'properties', 'sql', 'bat', 'sh', 
+    'c', 'cpp', 'py', 'java', 'js', 'ts', 'swift', 'go', 
+    'rb', 'php', 'css', 'scss', 'less'
+}
+
+# MIME type mapping
+MIME_TO_EXT = {
+    'text/plain': ['txt', 'log', 'conf', 'ini', 'properties'],
+    'text/markdown': ['md'],
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['docx'],
+    'application/pdf': ['pdf'],
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['pptx'],
+    'application/rtf': ['rtf'],
+    'application/vnd.oasis.opendocument.text': ['odt'],
+    'application/epub+zip': ['epub'],
+    'text/html': ['html', 'htm'],
+    'text/x-tex': ['tex'],
+    'application/json': ['json'],
+    'application/xml': ['xml'],
+    'text/xml': ['xml'],
+    'application/x-yaml': ['yaml', 'yml'],
+    'text/yaml': ['yaml', 'yml'],
+    'text/csv': ['csv'],
+    'text/x-sql': ['sql'],
+    'text/x-sh': ['sh'],
+    'text/x-bat': ['bat'],
+    'text/x-c': ['c'],
+    'text/x-c++': ['cpp'],
+    'text/x-python': ['py'],
+    'text/x-java': ['java'],
+    'text/javascript': ['js'],
+    'application/javascript': ['js'],
+    'text/x-typescript': ['ts'],
+    'text/x-swift': ['swift'],
+    'text/x-go': ['go'],
+    'text/x-ruby': ['rb'],
+    'text/x-php': ['php'],
+    'text/css': ['css'],
+    'text/x-scss': ['scss'],
+    'text/x-less': ['less']
+}
+
 def compute_doc_id(content: str) -> str:
     """Compute document ID using MD5 hash of content"""
     return f"doc-{hashlib.md5(content.strip().encode()).hexdigest()}"
@@ -96,6 +156,156 @@ def save_metadata_store():
             json.dump(metadata_store, f, indent=2)
     except Exception as e:
         print(f"Error saving metadata store: {e}")
+
+def extract_text_from_file(file_content: bytes, file_extension: str, filename: str) -> str:
+    """Extract text from various file formats"""
+    try:
+        # Text-based files
+        if file_extension in ['txt', 'md', 'log', 'conf', 'ini', 'properties', 'sql', 
+                             'bat', 'sh', 'c', 'cpp', 'py', 'java', 'js', 'ts', 
+                             'swift', 'go', 'rb', 'php', 'css', 'scss', 'less', 'tex']:
+            # Detect encoding
+            detected = chardet.detect(file_content)
+            encoding = detected['encoding'] or 'utf-8'
+            return file_content.decode(encoding, errors='replace')
+        
+        # Microsoft Word
+        elif file_extension == 'docx':
+            doc = docx.Document(io.BytesIO(file_content))
+            paragraphs = []
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    paragraphs.append(para.text)
+            # Also extract text from tables
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            paragraphs.append(cell.text)
+            return '\n\n'.join(paragraphs)
+        
+        # PDF
+        elif file_extension == 'pdf':
+            pdf_reader = pypdf.PdfReader(io.BytesIO(file_content))
+            text_parts = []
+            for page_num, page in enumerate(pdf_reader.pages, 1):
+                page_text = page.extract_text()
+                if page_text.strip():
+                    text_parts.append(f"--- Page {page_num} ---\n{page_text}")
+            return '\n\n'.join(text_parts)
+        
+        # PowerPoint
+        elif file_extension == 'pptx':
+            prs = pptx.Presentation(io.BytesIO(file_content))
+            text_parts = []
+            for slide_num, slide in enumerate(prs.slides, 1):
+                slide_text = []
+                for shape in slide.shapes:
+                    if hasattr(shape, 'text') and shape.text.strip():
+                        slide_text.append(shape.text)
+                if slide_text:
+                    text_parts.append(f"--- Slide {slide_num} ---\n" + '\n'.join(slide_text))
+            return '\n\n'.join(text_parts)
+        
+        # HTML
+        elif file_extension in ['html', 'htm']:
+            soup = BeautifulSoup(file_content, 'html.parser')
+            # Remove script and style elements
+            for script in soup(["script", "style"]):
+                script.decompose()
+            # Get text
+            text = soup.get_text()
+            # Break into lines and remove leading/trailing space
+            lines = (line.strip() for line in text.splitlines())
+            # Drop blank lines
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            return text
+        
+        # EPUB
+        elif file_extension == 'epub':
+            book = epub.read_epub(io.BytesIO(file_content))
+            text_parts = []
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    soup = BeautifulSoup(item.get_body_content(), 'html.parser')
+                    text = soup.get_text()
+                    if text.strip():
+                        text_parts.append(text)
+            return '\n\n'.join(text_parts)
+        
+        # JSON
+        elif file_extension == 'json':
+            data = json.loads(file_content.decode('utf-8'))
+            return json.dumps(data, indent=2, ensure_ascii=False)
+        
+        # XML
+        elif file_extension == 'xml':
+            soup = BeautifulSoup(file_content, 'xml')
+            return soup.prettify()
+        
+        # YAML
+        elif file_extension in ['yaml', 'yml']:
+            data = yaml.safe_load(file_content.decode('utf-8'))
+            return yaml.dump(data, default_flow_style=False, allow_unicode=True)
+        
+        # CSV
+        elif file_extension == 'csv':
+            detected = chardet.detect(file_content)
+            encoding = detected['encoding'] or 'utf-8'
+            text = file_content.decode(encoding, errors='replace')
+            # Parse CSV and format as readable text
+            reader = csv.reader(io.StringIO(text))
+            rows = list(reader)
+            if rows:
+                # Format as markdown table
+                result = []
+                if len(rows) > 1:
+                    # Assume first row is header
+                    headers = rows[0]
+                    result.append(' | '.join(headers))
+                    result.append(' | '.join(['---'] * len(headers)))
+                    for row in rows[1:]:
+                        result.append(' | '.join(row))
+                else:
+                    # Just one row
+                    result.append(' | '.join(rows[0]))
+                return '\n'.join(result)
+            return text
+        
+        # RTF and ODT would require additional libraries (python-rtf, odfpy)
+        # For now, try to extract as plain text
+        elif file_extension in ['rtf', 'odt']:
+            # Basic text extraction - won't preserve formatting
+            detected = chardet.detect(file_content)
+            encoding = detected['encoding'] or 'utf-8'
+            text = file_content.decode(encoding, errors='replace')
+            # For RTF, try to extract visible text (very basic)
+            if file_extension == 'rtf':
+                import re
+                # Remove RTF commands (basic approach)
+                text = re.sub(r'\\[a-z]+[0-9]*\s?', '', text)
+                text = re.sub(r'[{}]', '', text)
+            return text
+        
+        else:
+            # Fallback - try to decode as text
+            detected = chardet.detect(file_content)
+            encoding = detected['encoding'] or 'utf-8'
+            return file_content.decode(encoding, errors='replace')
+            
+    except Exception as e:
+        print(f"Error extracting text from {filename}: {e}")
+        # Fallback - try to decode as text
+        try:
+            detected = chardet.detect(file_content)
+            encoding = detected['encoding'] or 'utf-8'
+            return file_content.decode(encoding, errors='replace')
+        except:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Could not extract text from {filename}: {str(e)}"
+            )
 
 def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
     """Generate a display name from a file path for legacy documents"""
@@ -1908,6 +2118,97 @@ async def force_clear_all_graph_data():
         
     except Exception as e:
         print(f"Error in force clear: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    custom_name: Optional[str] = Form(None)
+):
+    """Upload and process a document file
+    
+    Args:
+        file: The uploaded file
+        custom_name: Optional custom name prefix for the file
+    
+    Returns:
+        Document metadata including ID and file path
+    """
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Get file extension
+        filename = file.filename
+        file_extension = filename.split('.')[-1].lower() if '.' in filename else ''
+        
+        # Validate file type
+        if file_extension not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {file_extension}. Supported types: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+            )
+        
+        # Extract text from file
+        extracted_text = extract_text_from_file(file_content, file_extension, filename)
+        
+        # Compute document ID
+        doc_id = compute_doc_id(extracted_text)
+        
+        # Generate file path with custom name if provided
+        if custom_name:
+            # Format: [custom_name] original_filename
+            file_path = f"[{custom_name}] {filename}"
+            display_name = file_path
+        else:
+            file_path = f"uploaded/{filename}"
+            display_name = filename
+        
+        # Add metadata header to content
+        metadata_parts = [
+            f"[FILE: {filename}]",
+            f"[TYPE: {file_extension.upper()}]",
+            f"[UPLOADED: {datetime.utcnow().isoformat()}]"
+        ]
+        if custom_name:
+            metadata_parts.append(f"[CUSTOM_NAME: {custom_name}]")
+        
+        enriched_content = "\n".join(metadata_parts) + "\n\n" + extracted_text
+        
+        # Store metadata
+        metadata_entry = {
+            "id": doc_id,
+            "file_path": file_path,
+            "display_name": display_name,
+            "original_filename": filename,
+            "custom_name": custom_name,
+            "file_type": file_extension,
+            "indexed_at": datetime.utcnow().isoformat(),
+            "content_summary": extracted_text[:200] + "..." if len(extracted_text) > 200 else extracted_text
+        }
+        
+        metadata_store[doc_id] = metadata_entry
+        save_metadata_store()
+        
+        # Insert into LightRAG
+        await rag_instance.ainsert(enriched_content, ids=[doc_id], file_paths=[file_path])
+        
+        return {
+            "status": "success",
+            "message": f"Document '{filename}' uploaded and processed successfully",
+            "doc_id": doc_id,
+            "file_path": file_path,
+            "display_name": display_name,
+            "file_type": file_extension,
+            "text_length": len(extracted_text)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error uploading document: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

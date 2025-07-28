@@ -15,6 +15,17 @@ wcwidth>=0.2.5
 # OpenAI for LLM and embeddings
 openai>=1.0.0
 
+# Document parsing libraries
+python-docx>=0.8.11
+pypdf>=3.17.0
+python-pptx>=0.6.21
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+ebooklib>=0.18
+python-magic>=0.4.27
+chardet>=5.2.0
+pyyaml>=6.0
+
 # Core dependencies
 nano-vectordb>=0.0.4.3
 networkx>=2.8
