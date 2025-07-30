@@ -2213,6 +2213,93 @@ async def upload_document(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/documents/upload/bulk")
+async def upload_documents_bulk(
+    files: List[UploadFile] = File(...),
+    custom_name: Optional[str] = Form(None)
+):
+    """Upload and process multiple document files"""
+    results = []
+    
+    for i, file in enumerate(files):
+        try:
+            # Process each file using existing logic
+            file_content = await file.read()
+            filename = file.filename
+            file_extension = filename.split('.')[-1].lower() if '.' in filename else ''
+            
+            if file_extension not in SUPPORTED_EXTENSIONS:
+                results.append({
+                    "filename": filename,
+                    "status": "error",
+                    "error": f"Unsupported file type: {file_extension}"
+                })
+                continue
+            
+            # Extract text and process (existing logic)
+            extracted_text = extract_text_from_file(file_content, file_extension, filename)
+            doc_id = compute_doc_id(extracted_text)
+            
+            # Generate file path
+            if custom_name:
+                file_path = f"[{custom_name}] {filename}"
+            else:
+                file_path = f"bulk_upload/{filename}"
+            
+            # Add metadata
+            metadata_parts = [
+                f"[FILE: {filename}]",
+                f"[TYPE: {file_extension.upper()}]",
+                f"[BULK_UPLOAD: {i+1} of {len(files)}]",
+                f"[UPLOADED: {datetime.utcnow().isoformat()}]"
+            ]
+            
+            enriched_content = "\n".join(metadata_parts) + "\n\n" + extracted_text
+            
+            # Store metadata
+            metadata_entry = {
+                "id": doc_id,
+                "file_path": file_path,
+                "display_name": filename,
+                "original_filename": filename,
+                "file_type": file_extension,
+                "indexed_at": datetime.utcnow().isoformat(),
+                "bulk_upload": True,
+                "batch_index": i + 1,
+                "batch_total": len(files)
+            }
+            
+            metadata_store[doc_id] = metadata_entry
+            
+            # Insert into LightRAG
+            await rag_instance.ainsert(enriched_content, ids=[doc_id], file_paths=[file_path])
+            
+            results.append({
+                "filename": filename,
+                "status": "success",
+                "doc_id": doc_id,
+                "file_path": file_path
+            })
+            
+        except Exception as e:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "error": str(e)
+            })
+    
+    # Save metadata after all uploads
+    save_metadata_store()
+    
+    return {
+        "status": "completed",
+        "total_files": len(files),
+        "successful": len([r for r in results if r["status"] == "success"]),
+        "failed": len([r for r in results if r["status"] == "error"]),
+        "results": results
+    }
+
+
 @app.post("/query")
 async def query(request: QueryRequest):
     """Query the RAG system"""
