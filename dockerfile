@@ -7,15 +7,18 @@ RUN apt-get update && apt-get install -y \
     git \
     build-essential \
     curl \
+    libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone LightRAG repository (for dependencies)
-RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
+# Copy requirements first to leverage Docker layer caching
+COPY requirements.txt /app/
 
-# Install Python packages
+# Install Python packages from requirements.txt
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir lightrag-hku[api] && \
-    pip install --no-cache-dir fastapi uvicorn[standard] python-multipart aiofiles wcwidth pydantic
+    pip install --no-cache-dir -r requirements.txt
+
+# Clone LightRAG repository (for any additional dependencies)
+RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
 
 # Copy scripts and API
 COPY lightrag_extended_api.py /app/
