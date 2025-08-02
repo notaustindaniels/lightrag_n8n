@@ -22,15 +22,12 @@ RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
 
 # Copy scripts and API
 COPY lightrag_extended_api.py /app/
-COPY startup_wrapper.py /app/
 COPY migrate_metadata.py /app/
 COPY download_webui.sh /app/
 COPY build_webui.sh /app/
-COPY test_health.py /app/
-COPY debug_deployment.py /app/
 
 # Make scripts executable
-RUN chmod +x /app/download_webui.sh /app/build_webui.sh /app/startup_wrapper.py
+RUN chmod +x /app/download_webui.sh /app/build_webui.sh
 
 # Try to get WebUI files
 RUN /app/download_webui.sh || echo "WebUI download failed, continuing..."
@@ -48,5 +45,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose the port
 EXPOSE 9621
 
-# Run the startup wrapper for better initialization and health checks
-CMD ["python", "/app/startup_wrapper.py"]
+# Run the extended API server
+CMD ["python", "/app/lightrag_extended_api.py"]
