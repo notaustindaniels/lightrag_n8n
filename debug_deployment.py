@@ -7,7 +7,14 @@ import sys
 import time
 import signal
 import subprocess
-import psutil
+
+# Optional dependency - install with: pip install psutil
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    print("Note: psutil not available. Install with 'pip install psutil' for detailed system info.")
 
 def check_environment():
     """Check environment variables and system info"""
@@ -25,13 +32,22 @@ def check_environment():
     
     print(f"\nPython: {sys.version}")
     print(f"Working directory: {os.getcwd()}")
-    print(f"Available memory: {psutil.virtual_memory().available / (1024**3):.2f} GB")
-    print(f"CPU count: {psutil.cpu_count()}")
+    
+    if HAS_PSUTIL:
+        print(f"Available memory: {psutil.virtual_memory().available / (1024**3):.2f} GB")
+        print(f"CPU count: {psutil.cpu_count()}")
+    else:
+        print("System info unavailable (psutil not installed)")
 
 def check_port_usage():
     """Check what's using the configured port"""
     port = int(os.getenv("PORT", "9621"))
     print(f"\n=== Port {port} Usage ===")
+    
+    if not HAS_PSUTIL:
+        print("psutil not available - cannot check port usage")
+        print("You can check manually with: netstat -tlnp | grep :9621")
+        return True  # Assume available if we can't check
     
     try:
         for conn in psutil.net_connections():
@@ -174,6 +190,8 @@ def main():
     print("2. Ensure OpenAI API key is valid")
     print("3. Check available memory and disk space")
     print("4. Review application logs for specific errors")
+    if not HAS_PSUTIL:
+        print("5. Install psutil for detailed system monitoring: pip install psutil")
 
 if __name__ == "__main__":
     main() 

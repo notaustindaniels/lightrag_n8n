@@ -29,7 +29,7 @@ The issue was in the `startup_wrapper.py` file which had a port conflict:
 ### 3. Added Debugging Tools
 - `test_health.py`: Script to test the health endpoint
 - `debug_deployment.py`: Comprehensive debugging script
-- Added `psutil` dependency for system monitoring
+- Debug script optionally uses psutil if available for system monitoring
 
 ### 4. Improved Consistency
 - Updated Dockerfile to use `startup_wrapper.py` for consistency
