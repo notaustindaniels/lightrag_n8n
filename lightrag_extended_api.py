@@ -1423,121 +1423,84 @@ async def reload_graph():
 
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
-    """Enhanced text insertion with full metadata support"""
+    """Enhanced text insertion with full metadata support and processing verification"""
     try:
-        # Prepare metadata header
-        metadata_parts = []
-        if request.source_url:
-            metadata_parts.append(f"[SOURCE_URL: {request.source_url}]")
-        if request.sitemap_url:
-            metadata_parts.append(f"[SITEMAP: {request.sitemap_url}]")
-        metadata_parts.append(f"[INDEXED: {datetime.utcnow().isoformat()}]")
-        if request.doc_index and request.total_docs:
-            metadata_parts.append(f"[DOC_INDEX: {request.doc_index} of {request.total_docs}]")
+        # Compute document ID
+        doc_id = compute_doc_id(request.text)
         
-        # Add metadata to content
-        if metadata_parts:
-            enriched_content = "\n".join(metadata_parts) + "\n\n" + request.text
+        # Handle source_url processing
+        if request.source_url:
+            enriched_content = f"Source: {request.source_url}\n"
+            if request.description:
+                enriched_content += f"Description: {request.description}\n"
+            enriched_content += f"\n{request.text}"
         else:
             enriched_content = request.text
         
-        # Check if document_id was provided by n8n workflow
+        # Determine file_path
         if request.document_id:
-            # Check if n8n sent us an [unknown] URL format and fix it
-            if request.document_id.startswith('[unknown] '):
-                # Remove the [unknown] prefix
-                url_part = request.document_id[10:]  # Remove '[unknown] '
-                # Try to create a better ID from the URL
+            if request.document_id.startswith('[') and ']' in request.document_id:
+                # Handle [domain] format from n8n
+                if request.document_id.startswith('[unknown] '):
+                    # Clean up [unknown] prefix
+                    cleaned_id = request.document_id.replace('[unknown] ', '')
+                    if request.source_url:
+                        try:
+                            from urllib.parse import urlparse
+                            parsed = urlparse(request.source_url)
+                            domain = parsed.netloc
+                            file_path = f"[{domain}] {cleaned_id}"
+                            full_path = request.source_url  # Store the full URL separately
+                        except:
+                            file_path = f"[unknown] {cleaned_id}"
+                    else:
+                        file_path = f"[unknown] {cleaned_id}"
+                else:
+                    # Use the provided document_id as-is
+                    file_path = request.document_id
+                    if request.source_url:
+                        full_path = request.source_url
+            else:
+                # Regular document_id, create file_path
                 if request.source_url:
                     try:
-                        parsed_url = urlparse(request.source_url)
-                        domain = parsed_url.netloc.replace('www.', '')
-                        path = parsed_url.path.strip('/')
-                        if path:
-                            file_path = f"[{domain}] {path}"
-                            display_name = f"[{domain}] {path}"  # Show full path, not just slug
-                        else:
-                            file_path = f"[{domain}]"
-                            display_name = f"[{domain}]"
-                        doc_id = file_path
+                        from urllib.parse import urlparse
+                        parsed = urlparse(request.source_url)
+                        domain = parsed.netloc
+                        file_path = f"[{domain}] {request.document_id}"
+                        full_path = request.source_url
                     except:
-                        # If parsing fails, try to extract domain from the URL string
-                        if url_part.startswith('http://') or url_part.startswith('https://'):
-                            # Try a simpler extraction
-                            try:
-                                # Extract domain from URL string
-                                url_without_protocol = url_part.split('://', 1)[1]
-                                domain = url_without_protocol.split('/', 1)[0].replace('www.', '')
-                                path_part = url_without_protocol.split('/', 1)[1] if '/' in url_without_protocol else ''
-                                
-                                if path_part:
-                                    file_path = f"[{domain}] {path_part}"
-                                    display_name = f"[{domain}] {path_part}"  # Show full path
-                                else:
-                                    file_path = f"[{domain}]"
-                                    display_name = f"[{domain}]"
-                                doc_id = file_path
-                            except:
-                                # Last resort: use URL as-is but try to make a display name
-                                file_path = url_part
-                                display_name = url_part.split('/')[-1] if '/' in url_part else url_part
-                                doc_id = compute_doc_id(enriched_content)
-                        else:
-                            # Not a URL format we recognize
-                            file_path = url_part
-                            display_name = url_part
-                            doc_id = compute_doc_id(enriched_content)
+                        file_path = f"text/{request.document_id}.txt"
                 else:
-                    # Just remove the [unknown] prefix, but still try to format nicely
-                    file_path = url_part
-                    # Try to extract a slug for display
-                    if '/' in url_part:
-                        display_name = url_part.split('/')[-1]
-                    else:
-                        display_name = url_part
-                    doc_id = compute_doc_id(enriched_content)
-            else:
-                # The document_id from n8n is already in the format we want
-                file_path = request.document_id
-                # Use the provided document_id as the doc_id to ensure consistency
-                doc_id = request.document_id
-                
-                # Use the full path for display_name
-                display_name = request.document_id  # Show full path with domain
-            
-            # Store the full URL path in metadata for reference
-            full_path = None
-            if request.source_url:
-                parsed_url = urlparse(request.source_url)
-                domain = parsed_url.netloc.replace('www.', '')
-                path = parsed_url.path.strip('/')
-                full_path = f"[{domain}] {path}" if path else f"[{domain}]"
+                    file_path = f"text/{request.document_id}.txt"
         else:
-            # Compute document ID
-            doc_id = compute_doc_id(enriched_content)
-            
-            # Create file path based on source URL (actual page) for better visibility
-            display_name = None
+            # No document_id provided, use computed hash
             if request.source_url:
-                # Extract domain and path from source URL for better display
-                parsed_url = urlparse(request.source_url)
-                domain = parsed_url.netloc.replace('www.', '')
-                path = parsed_url.path.strip('/')  # Remove leading and trailing slashes
-                
-                # For file_path, store the full path information
-                # Format: "[domain.com] full/path"
-                if path:
-                    file_path = f"[{domain}] {path}"
-                    # For display_name, show the full path
-                    display_name = f"[{domain}] {path}"
-                else:
-                    # For root domain (https://ai.pydantic.dev/)
-                    file_path = f"[{domain}]"
-                    display_name = f"[{domain}]"
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(request.source_url)
+                    domain = parsed.netloc
+                    # Use the last part of the URL path as filename
+                    path_parts = parsed.path.strip('/').split('/')
+                    page_name = path_parts[-1] if path_parts and path_parts[-1] else 'index'
+                    file_path = f"[{domain}] {page_name}"
+                    full_path = request.source_url
+                except:
+                    file_path = f"text/{doc_id}.txt"
             else:
                 file_path = f"text/{doc_id}.txt"
-                display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
         
+        # Generate display_name from file_path
+        if file_path.startswith('[') and ']' in file_path:
+            # For [domain] format, use the full path as display name
+            display_name = file_path
+        else:
+            # For other formats, use file_path or generate one
+            if len(file_path) > 50:
+                display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
+            else:
+                display_name = f"text/{doc_id[:8]}..."  # Shortened ID for display
+
         # Determine which ID to use for LightRAG
         if request.document_id and request.document_id.startswith('[') and ']' in request.document_id:
             # Check if this is an [unknown] format and use the cleaned version
@@ -1554,7 +1517,7 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             # Use the computed hash ID
             custom_id = doc_id
             metadata_key = doc_id
-        
+
         # Store metadata with the correct key
         metadata_entry = {
             "id": metadata_key,
@@ -1569,36 +1532,69 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             "total_docs": request.total_docs,
             "content_summary": enriched_content[:200] + "..." if len(enriched_content) > 200 else enriched_content
         }
-        
+
         # Add full_path if we have it (when using document_id from n8n)
         if request.document_id and 'full_path' in locals():
             metadata_entry["full_path"] = full_path
-            
-        metadata_store[metadata_key] = metadata_entry
-        
-        # Save metadata after each insert
-        save_metadata_store()
-        
-        # Insert into LightRAG with custom ID
+
+        # Insert into LightRAG with custom ID and wait for processing to complete
         await rag_instance.ainsert(enriched_content, ids=[custom_id], file_paths=[file_path])
         
-        # Log for debugging
-        print(f"Document inserted - Internal ID: {doc_id}, Custom ID: {custom_id}, file_path: {file_path}")
+        # Wait for processing to complete and verify success
+        import asyncio
+        max_retries = 30  # Wait up to 30 seconds
+        retry_count = 0
         
-        return {
-            "status": "success",
-            "message": "Document inserted successfully",
-            "doc_id": doc_id,
-            "file_path": file_path,
-            "display_name": display_name
-        }
+        while retry_count < max_retries:
+            await asyncio.sleep(1)  # Wait 1 second between checks
+            
+            # Check document status
+            if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+                try:
+                    doc_status_data = await rag_instance.doc_status.get(custom_id)
+                    if doc_status_data:
+                        status = doc_status_data.get('status', 'unknown')
+                        if status == 'processed':
+                            # Successfully processed - now store metadata
+                            metadata_store[metadata_key] = metadata_entry
+                            save_metadata_store()
+                            
+                            return {
+                                "status": "success",
+                                "message": "Document inserted and processed successfully",
+                                "doc_id": metadata_key,
+                                "file_path": file_path,
+                                "processing_status": "completed"
+                            }
+                        elif status == 'failed':
+                            error_msg = doc_status_data.get('error', 'Unknown processing error')
+                            raise HTTPException(
+                                status_code=500, 
+                                detail=f"Document processing failed: {error_msg}"
+                            )
+                        # If status is 'pending' or 'processing', continue waiting
+                except Exception as e:
+                    print(f"Error checking document status: {e}")
+            
+            retry_count += 1
         
+        # If we get here, processing timed out
+        raise HTTPException(
+            status_code=500, 
+            detail="Document processing timed out. The document may still be processing in the background."
+        )
+        
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error in insert_text_enhanced: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/documents/text")
 async def insert_text(request: TextInsertRequest):
-    """Standard text insertion with file_path support"""
+    """Standard text insertion with file_path support and processing verification"""
     try:
         # Compute document ID
         doc_id = compute_doc_id(request.text)
@@ -1610,7 +1606,7 @@ async def insert_text(request: TextInsertRequest):
         display_name = generate_display_name_from_file_path(file_path, doc_id)
         
         # Store metadata
-        metadata_store[doc_id] = {
+        metadata_entry = {
             "id": doc_id,
             "file_path": file_path,
             "display_name": display_name,
@@ -1619,20 +1615,59 @@ async def insert_text(request: TextInsertRequest):
             "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
         }
         
-        # Save metadata after each insert
-        save_metadata_store()
-        
-        # Insert into LightRAG with file path
+        # Insert into LightRAG with file path and wait for processing
         await rag_instance.ainsert(request.text, file_paths=[file_path])
         
-        return {
-            "status": "success",
-            "message": "Document inserted successfully",
-            "doc_id": doc_id,
-            "file_path": file_path
-        }
+        # Wait for processing to complete and verify success
+        import asyncio
+        max_retries = 30  # Wait up to 30 seconds
+        retry_count = 0
         
+        while retry_count < max_retries:
+            await asyncio.sleep(1)  # Wait 1 second between checks
+            
+            # Check document status
+            if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+                try:
+                    doc_status_data = await rag_instance.doc_status.get(doc_id)
+                    if doc_status_data:
+                        status = doc_status_data.get('status', 'unknown')
+                        if status == 'processed':
+                            # Successfully processed - now store metadata
+                            metadata_store[doc_id] = metadata_entry
+                            save_metadata_store()
+                            
+                            return {
+                                "status": "success",
+                                "message": "Document inserted and processed successfully",
+                                "doc_id": doc_id,
+                                "file_path": file_path,
+                                "processing_status": "completed"
+                            }
+                        elif status == 'failed':
+                            error_msg = doc_status_data.get('error', 'Unknown processing error')
+                            raise HTTPException(
+                                status_code=500, 
+                                detail=f"Document processing failed: {error_msg}"
+                            )
+                        # If status is 'pending' or 'processing', continue waiting
+                except Exception as e:
+                    print(f"Error checking document status: {e}")
+            
+            retry_count += 1
+        
+        # If we get here, processing timed out
+        raise HTTPException(
+            status_code=500, 
+            detail="Document processing timed out. The document may still be processing in the background."
+        )
+        
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error in insert_text: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents")
@@ -1718,7 +1753,8 @@ async def get_documents():
                                     "file_path": file_path,
                                     "display_name": display_name,
                                     "metadata": metadata,
-                                    "status": doc_data.get('status', 'processed')
+                                    "status": doc_data.get('status', 'unknown'),
+                                    "error": doc_data.get('error') if doc_data.get('status') == 'failed' else None
                                 })
                     except Exception as e:
                         print(f"Error with get_all method: {e}")
@@ -1748,7 +1784,8 @@ async def get_documents():
                                     "file_path": file_path,
                                     "display_name": display_name,
                                     "metadata": metadata,
-                                    "status": 'processed'
+                                    "status": doc_data.get('status', 'unknown'),
+                                    "error": doc_data.get('error') if doc_data.get('status') == 'failed' else None
                                 })
                     except Exception as e:
                         print(f"Error accessing _data: {e}")
@@ -1779,7 +1816,8 @@ async def get_documents():
                                         "file_path": file_path,
                                         "display_name": display_name,
                                         "metadata": metadata,
-                                        "status": doc_data.get('status', 'processed')
+                                        "status": "processed",  # From metadata store, assume processed
+                                        "error": None
                                     })
                     except Exception as e:
                         print(f"Error reading doc_status.json: {e}")
@@ -1816,11 +1854,20 @@ async def get_documents():
                     "status": "processed"
                 })
         
+        # Categorize documents by status
+        processed = [doc for doc in documents if doc.get('status') == 'processed']
+        pending = [doc for doc in documents if doc.get('status') == 'pending']
+        processing = [doc for doc in documents if doc.get('status') == 'processing']
+        failed = [doc for doc in documents if doc.get('status') == 'failed']
+        unknown = [doc for doc in documents if doc.get('status') not in ['processed', 'pending', 'processing', 'failed']]
+        
         return {
             "statuses": {
-                "processed": documents,
-                "pending": [],
-                "failed": []
+                "processed": processed,
+                "pending": pending,
+                "processing": processing,
+                "failed": failed,
+                "unknown": unknown
             },
             "total": len(documents)
         }
@@ -2762,6 +2809,69 @@ async def get_source_graph_statistics(source: str):
         
         return stats
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/status/{doc_id}")
+async def get_document_status(doc_id: str):
+    """Get the processing status of a specific document"""
+    try:
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            doc_status_data = await rag_instance.doc_status.get(doc_id)
+            if doc_status_data:
+                return {
+                    "doc_id": doc_id,
+                    "status": doc_status_data.get('status', 'unknown'),
+                    "error": doc_status_data.get('error'),
+                    "created_at": doc_status_data.get('created_at'),
+                    "updated_at": doc_status_data.get('updated_at'),
+                    "content_length": doc_status_data.get('content_length'),
+                    "chunks_count": doc_status_data.get('chunks_count')
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Document not found")
+        else:
+            raise HTTPException(status_code=500, detail="Document status storage not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/status")
+async def get_all_document_statuses():
+    """Get processing status of all documents"""
+    try:
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            # Get documents by status
+            pending_docs = await rag_instance.doc_status.get_docs_by_status("pending")
+            processing_docs = await rag_instance.doc_status.get_docs_by_status("processing") 
+            processed_docs = await rag_instance.doc_status.get_docs_by_status("processed")
+            failed_docs = await rag_instance.doc_status.get_docs_by_status("failed")
+            
+            return {
+                "statuses": {
+                    "pending": {
+                        "count": len(pending_docs),
+                        "documents": list(pending_docs.keys())
+                    },
+                    "processing": {
+                        "count": len(processing_docs),
+                        "documents": list(processing_docs.keys())
+                    },
+                    "processed": {
+                        "count": len(processed_docs),
+                        "documents": list(processed_docs.keys())
+                    },
+                    "failed": {
+                        "count": len(failed_docs),
+                        "documents": [{"id": doc_id, "error": doc_data.get('error', 'Unknown error')} 
+                                    for doc_id, doc_data in failed_docs.items()]
+                    }
+                },
+                "total": len(pending_docs) + len(processing_docs) + len(processed_docs) + len(failed_docs)
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Document status storage not available")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
