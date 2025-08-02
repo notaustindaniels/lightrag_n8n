@@ -45,5 +45,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose the port
 EXPOSE 9621
 
-# Run the extended API server
-CMD ["python", "/app/lightrag_extended_api.py"]
+# Run the startup wrapper for better initialization and health checks
+CMD ["python", "/app/startup_wrapper.py"]

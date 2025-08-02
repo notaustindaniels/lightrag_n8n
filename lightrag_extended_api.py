@@ -2764,3 +2764,24 @@ async def get_source_graph_statistics(source: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Startup code for running directly
+if __name__ == "__main__":
+    import uvicorn
+    import asyncio
+    
+    # Get configuration from environment
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "9621"))
+    
+    print(f"Starting LightRAG Extended API Server on {host}:{port}")
+    print(f"Working directory: {os.getenv('WORKING_DIR', '/app/data/rag_storage')}")
+    
+    # Run the server
+    uvicorn.run(
+        "lightrag_extended_api:app",
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True
+    )
