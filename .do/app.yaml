@@ -7,12 +7,19 @@ services:
     repo: your-github-username/your-repo-name
   http_port: 9621
   instance_count: 1
-  instance_size_slug: basic-xs
+  instance_size_slug: basic-s
   name: lightrag
   routes:
   - path: /
-  run_command: python /app/lightrag_extended_api.py
+  run_command: python /app/startup_wrapper.py
   source_dir: /
+  health_check:
+    http_path: /health
+    initial_delay_seconds: 60
+    period_seconds: 30
+    timeout_seconds: 10
+    success_threshold: 1
+    failure_threshold: 5
   envs:
   - key: OPENAI_API_KEY
     scope: RUN_TIME

@@ -47,3 +47,4 @@ test_*.py
 !migrate_metadata.py
 !webui/
 !requirements.txt
+!startup_wrapper.py
