@@ -22,12 +22,15 @@ RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
 
 # Copy scripts and API
 COPY lightrag_extended_api.py /app/
+COPY startup_wrapper.py /app/
 COPY migrate_metadata.py /app/
 COPY download_webui.sh /app/
 COPY build_webui.sh /app/
+COPY test_health.py /app/
+COPY debug_deployment.py /app/
 
 # Make scripts executable
-RUN chmod +x /app/download_webui.sh /app/build_webui.sh
+RUN chmod +x /app/download_webui.sh /app/build_webui.sh /app/startup_wrapper.py
 
 # Try to get WebUI files
 RUN /app/download_webui.sh || echo "WebUI download failed, continuing..."
