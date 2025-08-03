@@ -2369,68 +2369,89 @@ async def list_document_sources():
     """
     List all available documentation sources/libraries
     Returns unique sources extracted from document IDs in format [source] filename
-    
-    This follows the same pattern as the existing /documents endpoint
     """
     try:
         sources_map = {}  # source -> {count, example_docs, description}
         processed_doc_ids = set()  # Track which doc_ids we've already counted
         
-        # First, check doc_status if available (since this is where your documents are)
+        # Use the EXACT same logic as /documents endpoint
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
             try:
-                all_docs = await rag_instance.doc_status.get_all()
-                print(f"Found {len(all_docs)} documents in doc_status")  # Debug log
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
                 
-                for doc_id, doc_data in all_docs.items():
-                    # Check doc_id first
-                    if doc_id.startswith('[') and ']' in doc_id:
-                        source_name = doc_id.split(']')[0][1:]
-                        processed_doc_ids.add(doc_id)
-                        
-                        if source_name not in sources_map:
-                            sources_map[source_name] = {
-                                "source": source_name,
-                                "document_count": 0,
-                                "example_files": [],
-                                "description": "",
-                                "last_indexed": doc_data.get('updated_at', '')
-                            }
-                        
-                        sources_map[source_name]["document_count"] += 1
-                        
-                        # Add example file (limit to 5)
-                        if len(sources_map[source_name]["example_files"]) < 5:
-                            # Extract filename after ]
-                            filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
-                            sources_map[source_name]["example_files"].append(filename)
-                        
-                        # Update last indexed time
-                        updated_at = doc_data.get('updated_at', '')
-                        if updated_at and updated_at > sources_map[source_name]["last_indexed"]:
-                            sources_map[source_name]["last_indexed"] = updated_at
+                # Method 1: Try to get all documents directly
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                # Method 2: Try to iterate through storage if it's dict-like
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                # Method 3: Try JSON storage file directly
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                # Process documents if we found any
+                if all_docs:
+                    for doc_id, doc_data in all_docs.items():
+                        # Check if doc_id matches [source] pattern
+                        if doc_id.startswith('[') and ']' in doc_id:
+                            source_name = doc_id.split(']')[0][1:]
+                            processed_doc_ids.add(doc_id)
                             
+                            if source_name not in sources_map:
+                                sources_map[source_name] = {
+                                    "source": source_name,
+                                    "document_count": 0,
+                                    "example_files": [],
+                                    "description": "",
+                                    "last_indexed": ""
+                                }
+                            
+                            sources_map[source_name]["document_count"] += 1
+                            
+                            # Add example file (limit to 5)
+                            if len(sources_map[source_name]["example_files"]) < 5:
+                                # Extract filename after ]
+                                filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
+                                sources_map[source_name]["example_files"].append(filename)
+                            
+                            # Update last indexed time if available
+                            if isinstance(doc_data, dict):
+                                updated_at = doc_data.get('updated_at', '')
+                                if updated_at and (not sources_map[source_name]["last_indexed"] or 
+                                                 updated_at > sources_map[source_name]["last_indexed"]):
+                                    sources_map[source_name]["last_indexed"] = updated_at
+                                    
             except Exception as e:
-                print(f"Error accessing doc_status: {e}")
+                print(f"Error accessing doc_status storage: {e}")
+                import traceback
+                traceback.print_exc()
         
-        # Then check metadata store for any additional documents
+        # Also check metadata store
         for doc_id, metadata in metadata_store.items():
-            # Skip if we already processed this doc_id
             if doc_id in processed_doc_ids:
                 continue
                 
-            source_name = None
-            
-            # PRIORITIZE checking the doc_id (the "id" field) first
             if doc_id.startswith('[') and ']' in doc_id:
-                source_name = doc_id.split(']')[0][1:]  # Extract text between [ and ]
-            else:
-                # Only check file_path if doc_id doesn't have the pattern
-                file_path = metadata.get('file_path', '')
-                if file_path.startswith('[') and ']' in file_path:
-                    source_name = file_path.split(']')[0][1:]
-            
-            if source_name:
+                source_name = doc_id.split(']')[0][1:]
+                
                 if source_name not in sources_map:
                     sources_map[source_name] = {
                         "source": source_name,
@@ -2442,19 +2463,10 @@ async def list_document_sources():
                 
                 sources_map[source_name]["document_count"] += 1
                 
-                # Add example file (limit to 5)
                 if len(sources_map[source_name]["example_files"]) < 5:
-                    # Extract just the filename part after ]
-                    file_path = metadata.get('file_path', doc_id)
-                    if ']' in file_path:
-                        filename = file_path.split(']', 1)[1].strip()
-                    elif ']' in doc_id:
-                        filename = doc_id.split(']', 1)[1].strip()
-                    else:
-                        filename = file_path
+                    filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
                     sources_map[source_name]["example_files"].append(filename)
                 
-                # Update last indexed time
                 indexed_at = metadata.get('indexed_at', '')
                 if indexed_at and indexed_at > sources_map[source_name]["last_indexed"]:
                     sources_map[source_name]["last_indexed"] = indexed_at
@@ -2462,8 +2474,6 @@ async def list_document_sources():
         # Convert to list and sort by document count
         sources_list = list(sources_map.values())
         sources_list.sort(key=lambda x: x["document_count"], reverse=True)
-        
-        print(f"Returning {len(sources_list)} sources")  # Debug log
         
         return SourceListResponse(
             sources=sources_list,
@@ -2475,6 +2485,105 @@ async def list_document_sources():
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/sources")
+async def debug_sources():
+    """Debug endpoint to understand why sources aren't being detected"""
+    debug_info = {
+        "metadata_store_count": len(metadata_store),
+        "metadata_store_sample": [],
+        "doc_status_methods": [],
+        "doc_status_sample": [],
+        "sources_found": []
+    }
+    
+    # Check metadata store
+    for i, (doc_id, metadata) in enumerate(metadata_store.items()):
+        if i < 5:  # Show first 5
+            debug_info["metadata_store_sample"].append({
+                "doc_id": doc_id,
+                "has_bracket": doc_id.startswith('[') and ']' in doc_id,
+                "file_path": metadata.get('file_path', 'N/A')
+            })
+    
+    # Check doc_status with all methods
+    if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+        doc_status_storage = rag_instance.doc_status
+        
+        # Method 1: get_all
+        if hasattr(doc_status_storage, 'get_all'):
+            try:
+                all_docs = await doc_status_storage.get_all()
+                debug_info["doc_status_methods"].append({
+                    "method": "get_all",
+                    "success": True,
+                    "doc_count": len(all_docs) if all_docs else 0,
+                    "type": type(all_docs).__name__ if all_docs else "None"
+                })
+                
+                # Sample docs
+                if all_docs:
+                    for i, (doc_id, doc_data) in enumerate(all_docs.items()):
+                        if i < 5:
+                            debug_info["doc_status_sample"].append({
+                                "doc_id": doc_id,
+                                "has_bracket": doc_id.startswith('[') and ']' in doc_id,
+                                "source": doc_id.split(']')[0][1:] if doc_id.startswith('[') and ']' in doc_id else "N/A"
+                            })
+                            
+                            # Extract sources
+                            if doc_id.startswith('[') and ']' in doc_id:
+                                source = doc_id.split(']')[0][1:]
+                                if source not in debug_info["sources_found"]:
+                                    debug_info["sources_found"].append(source)
+                                    
+            except Exception as e:
+                debug_info["doc_status_methods"].append({
+                    "method": "get_all",
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        # Method 2: _data
+        if hasattr(doc_status_storage, '_data'):
+            try:
+                storage_data = doc_status_storage._data
+                debug_info["doc_status_methods"].append({
+                    "method": "_data",
+                    "success": True,
+                    "type": type(storage_data).__name__,
+                    "is_dict": isinstance(storage_data, dict),
+                    "doc_count": len(storage_data) if isinstance(storage_data, dict) else "N/A"
+                })
+            except Exception as e:
+                debug_info["doc_status_methods"].append({
+                    "method": "_data",
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        # Method 3: JSON file
+        try:
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            doc_status_file = os.path.join(working_dir, "doc_status.json")
+            debug_info["doc_status_file_exists"] = os.path.exists(doc_status_file)
+            
+            if os.path.exists(doc_status_file):
+                with open(doc_status_file, 'r') as f:
+                    file_data = json.load(f)
+                debug_info["doc_status_methods"].append({
+                    "method": "json_file",
+                    "success": True,
+                    "doc_count": len(file_data) if isinstance(file_data, dict) else "N/A"
+                })
+        except Exception as e:
+            debug_info["doc_status_methods"].append({
+                "method": "json_file",
+                "success": False,
+                "error": str(e)
+            })
+    
+    return debug_info
 
 @app.get("/documents/by-source/{source}")
 async def get_documents_by_source(source: str):
