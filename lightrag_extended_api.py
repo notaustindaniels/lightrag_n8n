@@ -2377,17 +2377,16 @@ async def list_document_sources():
         
         # First, try to get from metadata store
         for doc_id, metadata in metadata_store.items():
-            # Extract source from doc_id or file_path
             source_name = None
             
-            # Try to extract from file_path first (more reliable)
-            file_path = metadata.get('file_path', doc_id)
-            if file_path.startswith('[') and ']' in file_path:
-                source_name = file_path.split(']')[0][1:]  # Extract text between [ and ]
-            
-            # If no source found and doc_id starts with [, use doc_id
-            elif doc_id.startswith('[') and ']' in doc_id:
-                source_name = doc_id.split(']')[0][1:]
+            # PRIORITIZE checking the doc_id (the "id" field) first
+            if doc_id.startswith('[') and ']' in doc_id:
+                source_name = doc_id.split(']')[0][1:]  # Extract text between [ and ]
+            else:
+                # Only check file_path if doc_id doesn't have the pattern
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith('[') and ']' in file_path:
+                    source_name = file_path.split(']')[0][1:]
             
             if source_name:
                 if source_name not in sources_map:
@@ -2404,8 +2403,11 @@ async def list_document_sources():
                 # Add example file (limit to 5)
                 if len(sources_map[source_name]["example_files"]) < 5:
                     # Extract just the filename part after ]
+                    file_path = metadata.get('file_path', doc_id)
                     if ']' in file_path:
                         filename = file_path.split(']', 1)[1].strip()
+                    elif ']' in doc_id:
+                        filename = doc_id.split(']', 1)[1].strip()
                     else:
                         filename = file_path
                     sources_map[source_name]["example_files"].append(filename)
@@ -2415,11 +2417,12 @@ async def list_document_sources():
                 if indexed_at > sources_map[source_name]["last_indexed"]:
                     sources_map[source_name]["last_indexed"] = indexed_at
         
-        # Also check doc_status if available
+        # Also check doc_status if available - ALSO FIXED HERE
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
             try:
                 all_docs = await rag_instance.doc_status.get_all()
                 for doc_id, doc_data in all_docs.items():
+                    # Check doc_id first
                     if doc_id.startswith('[') and ']' in doc_id:
                         source_name = doc_id.split(']')[0][1:]
                         if source_name not in sources_map:
@@ -2430,6 +2433,10 @@ async def list_document_sources():
                                 "description": "",
                                 "last_indexed": ""
                             }
+                        elif doc_id not in metadata_store:
+                            # This document is in doc_status but not in metadata_store
+                            # Increment the count
+                            sources_map[source_name]["document_count"] += 1
             except:
                 pass
         
@@ -2446,7 +2453,6 @@ async def list_document_sources():
         print(f"Error listing sources: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Following the pattern of /documents/by-sitemap/{sitemap_url}
 @app.get("/documents/by-source/{source}")
 async def get_documents_by_source(source: str):
     """
@@ -2466,30 +2472,35 @@ async def get_documents_by_source(source: str):
         
         # Search in metadata store
         for doc_id, metadata in metadata_store.items():
-            file_path = metadata.get('file_path', doc_id)
-            
-            # Check if doc_id or file_path starts with the source pattern
-            if (doc_id.startswith(source_pattern) or 
-                file_path.startswith(source_pattern)):
-                
-                # Extract filename
-                if file_path.startswith(source_pattern):
-                    filename = file_path[len(source_pattern):].strip()
-                else:
-                    filename = doc_id[len(source_pattern):].strip() if doc_id.startswith(source_pattern) else file_path
-                
-                # Use file_path as the display ID if it's in the proper format
-                display_id = file_path if file_path.startswith('[') and ']' in file_path else doc_id
+            # PRIORITIZE checking doc_id first
+            if doc_id.startswith(source_pattern):
+                # Extract filename after the source pattern
+                filename = doc_id[len(source_pattern):].strip()
                 
                 matching_docs.append({
-                    "id": display_id,
+                    "id": doc_id,  # Use the actual doc_id as the display ID
                     "doc_id": doc_id,
-                    "file_path": file_path,
+                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
                     "filename": filename,
-                    "display_name": metadata.get('display_name', file_path),
+                    "display_name": metadata.get('display_name', doc_id),
                     "indexed_at": metadata.get('indexed_at'),
                     "status": "processed"
                 })
+            else:
+                # Only check file_path if doc_id doesn't match
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith(source_pattern):
+                    filename = file_path[len(source_pattern):].strip()
+                    
+                    matching_docs.append({
+                        "id": doc_id,
+                        "doc_id": doc_id,
+                        "file_path": file_path,
+                        "filename": filename,
+                        "display_name": metadata.get('display_name', file_path),
+                        "indexed_at": metadata.get('indexed_at'),
+                        "status": "processed"
+                    })
         
         # Sort by filename
         matching_docs.sort(key=lambda x: x["filename"])
@@ -2524,18 +2535,27 @@ async def delete_documents_by_source(source: str):
         source_pattern = f"[{source}]"
         
         for doc_id, metadata in metadata_store.items():
-            file_path = metadata.get('file_path', doc_id)
-            if (doc_id.startswith(source_pattern) or 
-                file_path.startswith(source_pattern)):
+            # PRIORITIZE checking doc_id first
+            if doc_id.startswith(source_pattern):
                 metadata_keys_to_delete.append(doc_id)
+                docs_to_delete.append(doc_id)
                 
-                # For LightRAG deletion, we need to use the actual ID that LightRAG is using
-                if doc_id.startswith('[') and ']' in doc_id:
-                    docs_to_delete.append(doc_id)
-                else:
-                    original_id = metadata.get('original_doc_id', doc_id)
+                # Also add any variations that might exist
+                original_id = metadata.get('original_doc_id')
+                if original_id and original_id != doc_id:
                     docs_to_delete.append(original_id)
-                    if file_path and file_path != original_id:
+            else:
+                # Only check file_path if doc_id doesn't match
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith(source_pattern):
+                    metadata_keys_to_delete.append(doc_id)
+                    docs_to_delete.append(doc_id)
+                    
+                    # Add variations
+                    original_id = metadata.get('original_doc_id', doc_id)
+                    if original_id not in docs_to_delete:
+                        docs_to_delete.append(original_id)
+                    if file_path not in docs_to_delete:
                         docs_to_delete.append(file_path)
         
         if docs_to_delete:
@@ -2581,7 +2601,6 @@ async def delete_documents_by_source(source: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/query")
 async def query_with_optional_filtering(request: FilteredQueryRequest):
@@ -2738,12 +2757,13 @@ async def get_source_graph_statistics(source: str):
         doc_ids_in_source = set()
         
         for doc_id, metadata in metadata_store.items():
-            file_path = metadata.get('file_path', doc_id)
-            if doc_id.startswith(source_pattern) or file_path.startswith(source_pattern):
+            # PRIORITIZE checking doc_id first
+            if doc_id.startswith(source_pattern):
                 doc_ids_in_source.add(doc_id)
                 stats["document_count"] += 1
                 
-                # Track file types
+                # Track file types from file_path
+                file_path = metadata.get('file_path', doc_id)
                 if '.' in file_path:
                     ext = file_path.split('.')[-1].lower()
                     stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
@@ -2755,6 +2775,25 @@ async def get_source_graph_statistics(source: str):
                         stats["latest_update"] = indexed_at
                     if not stats["oldest_document"] or indexed_at < stats["oldest_document"]:
                         stats["oldest_document"] = indexed_at
+            else:
+                # Only check file_path if doc_id doesn't match
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith(source_pattern):
+                    doc_ids_in_source.add(doc_id)
+                    stats["document_count"] += 1
+                    
+                    # Track file types
+                    if '.' in file_path:
+                        ext = file_path.split('.')[-1].lower()
+                        stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
+                    
+                    # Track dates
+                    indexed_at = metadata.get('indexed_at', '')
+                    if indexed_at:
+                        if not stats["latest_update"] or indexed_at > stats["latest_update"]:
+                            stats["latest_update"] = indexed_at
+                        if not stats["oldest_document"] or indexed_at < stats["oldest_document"]:
+                            stats["oldest_document"] = indexed_at
         
         # Get chunk and entity counts from vector databases
         working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
