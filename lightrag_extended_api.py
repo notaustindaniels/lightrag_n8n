@@ -2374,9 +2374,51 @@ async def list_document_sources():
     """
     try:
         sources_map = {}  # source -> {count, example_docs, description}
+        processed_doc_ids = set()  # Track which doc_ids we've already counted
         
-        # First, try to get from metadata store
+        # First, check doc_status if available (since this is where your documents are)
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                all_docs = await rag_instance.doc_status.get_all()
+                print(f"Found {len(all_docs)} documents in doc_status")  # Debug log
+                
+                for doc_id, doc_data in all_docs.items():
+                    # Check doc_id first
+                    if doc_id.startswith('[') and ']' in doc_id:
+                        source_name = doc_id.split(']')[0][1:]
+                        processed_doc_ids.add(doc_id)
+                        
+                        if source_name not in sources_map:
+                            sources_map[source_name] = {
+                                "source": source_name,
+                                "document_count": 0,
+                                "example_files": [],
+                                "description": "",
+                                "last_indexed": doc_data.get('updated_at', '')
+                            }
+                        
+                        sources_map[source_name]["document_count"] += 1
+                        
+                        # Add example file (limit to 5)
+                        if len(sources_map[source_name]["example_files"]) < 5:
+                            # Extract filename after ]
+                            filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
+                            sources_map[source_name]["example_files"].append(filename)
+                        
+                        # Update last indexed time
+                        updated_at = doc_data.get('updated_at', '')
+                        if updated_at and updated_at > sources_map[source_name]["last_indexed"]:
+                            sources_map[source_name]["last_indexed"] = updated_at
+                            
+            except Exception as e:
+                print(f"Error accessing doc_status: {e}")
+        
+        # Then check metadata store for any additional documents
         for doc_id, metadata in metadata_store.items():
+            # Skip if we already processed this doc_id
+            if doc_id in processed_doc_ids:
+                continue
+                
             source_name = None
             
             # PRIORITIZE checking the doc_id (the "id" field) first
@@ -2414,35 +2456,14 @@ async def list_document_sources():
                 
                 # Update last indexed time
                 indexed_at = metadata.get('indexed_at', '')
-                if indexed_at > sources_map[source_name]["last_indexed"]:
+                if indexed_at and indexed_at > sources_map[source_name]["last_indexed"]:
                     sources_map[source_name]["last_indexed"] = indexed_at
-        
-        # Also check doc_status if available - ALSO FIXED HERE
-        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
-            try:
-                all_docs = await rag_instance.doc_status.get_all()
-                for doc_id, doc_data in all_docs.items():
-                    # Check doc_id first
-                    if doc_id.startswith('[') and ']' in doc_id:
-                        source_name = doc_id.split(']')[0][1:]
-                        if source_name not in sources_map:
-                            sources_map[source_name] = {
-                                "source": source_name,
-                                "document_count": 1,
-                                "example_files": [],
-                                "description": "",
-                                "last_indexed": ""
-                            }
-                        elif doc_id not in metadata_store:
-                            # This document is in doc_status but not in metadata_store
-                            # Increment the count
-                            sources_map[source_name]["document_count"] += 1
-            except:
-                pass
         
         # Convert to list and sort by document count
         sources_list = list(sources_map.values())
         sources_list.sort(key=lambda x: x["document_count"], reverse=True)
+        
+        print(f"Returning {len(sources_list)} sources")  # Debug log
         
         return SourceListResponse(
             sources=sources_list,
@@ -2451,6 +2472,8 @@ async def list_document_sources():
         
     except Exception as e:
         print(f"Error listing sources: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/documents/by-source/{source}")
