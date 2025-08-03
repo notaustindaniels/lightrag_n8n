@@ -2582,33 +2582,19 @@ async def delete_documents_by_source(source: str):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-# Extend the existing /query endpoint functionality
+
 @app.post("/query")
 async def query_with_optional_filtering(request: FilteredQueryRequest):
     """
     Query the RAG system with optional source filtering
-    
-    This extends the standard /query endpoint to support optional source filtering.
-    If no sources are specified, it behaves exactly like the standard query.
-    
-    Args:
-        request: Query request with optional sources filter
-    
-    Returns:
-        Query response
     """
     try:
         # If no sources specified, use standard query
         if not request.sources:
+            # Only pass the parameters that QueryParam actually accepts
             param = QueryParam(
                 mode=request.mode,
-                stream=request.stream,
-                only_need_context=request.only_need_context,
-                response_type=request.response_type,
-                top_k=request.top_k,
-                max_token_for_text_unit=request.max_token_for_text_unit,
-                max_token_for_global_context=request.max_token_for_global_context,
-                max_token_for_local_context=request.max_token_for_local_context
+                stream=request.stream
             )
             
             result = await rag_instance.aquery(request.query, param=param)
