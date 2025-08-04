@@ -2764,7 +2764,9 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
         for doc_id, metadata in metadata_store.items():
             file_path = metadata.get('file_path', doc_id)
             for pattern in source_patterns:
-                if doc_id.startswith(pattern) or file_path.startswith(pattern):
+                # Check both with and without space after bracket for compatibility
+                if (doc_id.startswith(pattern) or doc_id.startswith(pattern + " ") or 
+                    file_path.startswith(pattern) or file_path.startswith(pattern + " ")):
                     allowed_doc_ids.add(doc_id)
                     if file_path != doc_id:
                         allowed_doc_ids.add(file_path)
@@ -2776,7 +2778,8 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
                 all_docs = await rag_instance.doc_status.get_all()
                 for doc_id in all_docs.keys():
                     for pattern in source_patterns:
-                        if doc_id.startswith(pattern):
+                        # Check both with and without space after bracket for compatibility
+                        if doc_id.startswith(pattern) or doc_id.startswith(pattern + " "):
                             allowed_doc_ids.add(doc_id)
                             break
             except:
