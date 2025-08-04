@@ -2888,15 +2888,10 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
         enhanced_query = source_context + request.query
         
         # Perform the query
+        # Only pass the parameters that QueryParam actually accepts
         param = QueryParam(
             mode=request.mode,
-            stream=request.stream,
-            only_need_context=request.only_need_context,
-            response_type=request.response_type,
-            top_k=request.top_k,
-            max_token_for_text_unit=request.max_token_for_text_unit,
-            max_token_for_global_context=request.max_token_for_global_context,
-            max_token_for_local_context=request.max_token_for_local_context
+            stream=request.stream
         )
         
         result = await rag_instance.aquery(enhanced_query, param=param)
