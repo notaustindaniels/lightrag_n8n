@@ -2634,6 +2634,64 @@ async def get_documents_by_source(source: str):
                         "status": "processed"
                     })
         
+        # Also check doc_status (same logic as /documents/sources)
+        processed_doc_ids = {doc["doc_id"] for doc in matching_docs}  # Track what we already found
+        
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
+                
+                # Method 1: Try to get all documents directly
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                # Method 2: Try to iterate through storage if it's dict-like
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                # Method 3: Try JSON storage file directly
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                # Process documents if we found any
+                if all_docs:
+                    for doc_id, doc_data in all_docs.items():
+                        # Skip if we already processed this doc from metadata_store
+                        if doc_id in processed_doc_ids:
+                            continue
+                        
+                        # Check if doc_id matches [source] pattern
+                        if doc_id.startswith(source_pattern) or doc_id.startswith(source_pattern + " "):
+                            filename = doc_id[len(source_pattern):].strip()
+                            
+                            matching_docs.append({
+                                "id": doc_id,
+                                "doc_id": doc_id,
+                                "file_path": doc_id,  # Use doc_id as file_path since we don't have metadata
+                                "filename": filename,
+                                "display_name": doc_id,
+                                "indexed_at": doc_data.get('indexed_at', '') if isinstance(doc_data, dict) else '',
+                                "status": doc_data.get('status', 'processed') if isinstance(doc_data, dict) else 'processed'
+                            })
+            except Exception as e:
+                print(f"Error checking doc_status: {e}")
+        
         # Sort by filename
         matching_docs.sort(key=lambda x: x["filename"])
         
