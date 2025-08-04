@@ -2830,18 +2830,49 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
                         allowed_doc_ids.add(file_path)
                     break
         
-        # Also check doc_status
+        # Also check doc_status (using same robust approach as /documents/by-source)
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
             try:
-                all_docs = await rag_instance.doc_status.get_all()
-                for doc_id in all_docs.keys():
-                    for pattern in source_patterns:
-                        # Check both with and without space after bracket for compatibility
-                        if doc_id.startswith(pattern) or doc_id.startswith(pattern + " "):
-                            allowed_doc_ids.add(doc_id)
-                            break
-            except:
-                pass
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
+                
+                # Method 1: Try to get all documents directly
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                # Method 2: Try to iterate through storage if it's dict-like
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                # Method 3: Try JSON storage file directly
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                # Process documents if we found any
+                if all_docs:
+                    for doc_id in all_docs.keys():
+                        for pattern in source_patterns:
+                            # Check both with and without space after bracket for compatibility
+                            if doc_id.startswith(pattern) or doc_id.startswith(pattern + " "):
+                                allowed_doc_ids.add(doc_id)
+                                break
+            except Exception as e:
+                print(f"Error checking doc_status in query: {e}")
         
         if not allowed_doc_ids:
             return {
