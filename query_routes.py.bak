@@ -24,39 +24,22 @@ class SourceListResponse(BaseModel):
     sources: List[Dict[str, Any]]
     total: int
 
-def get_workspace_instances():
-    from lightrag_extended_api import workspace_instances, WorkspaceManager
-    return workspace_instances, WorkspaceManager
-
-def get_workspace_metadata():
-    from lightrag_extended_api import workspace_metadata
-    return workspace_metadata
-
-def get_default_workspace():
-    from lightrag_extended_api import default_workspace
-    return default_workspace
-
-# Compatibility functions for existing code
 def get_rag_instance():
-    """Get default workspace RAG instance for backward compatibility"""
-    from lightrag_extended_api import workspace_instances, default_workspace
-    return workspace_instances.get(default_workspace)
+    from lightrag_extended_api import rag_instance
+    return rag_instance
 
 def get_metadata_store():
-    """Get default workspace metadata for backward compatibility"""
-    from lightrag_extended_api import workspace_metadata, default_workspace
-    return workspace_metadata.get(default_workspace, {})
+    from lightrag_extended_api import metadata_store
+    return metadata_store
 
 def get_helper_functions():
     from lightrag_extended_api import (
-        save_workspace_metadata,
         save_metadata_store,
         get_graph_from_storage,
         force_save_graph_to_disk,
         cleanup_all_document_traces
     )
     return {
-        'save_workspace_metadata': save_workspace_metadata,
         'save_metadata_store': save_metadata_store,
         'get_graph_from_storage': get_graph_from_storage,
         'force_save_graph_to_disk': force_save_graph_to_disk,
@@ -66,35 +49,102 @@ def get_helper_functions():
 @router.get("/documents/sources")
 async def list_document_sources():
     """
-    List all available documentation sources/libraries (workspaces)
-    Each source now represents a separate workspace with isolated data
+    List all available documentation sources/libraries
+    Returns unique sources extracted from document IDs in format [source] filename
     """
     try:
-        workspace_instances, WorkspaceManager = get_workspace_instances()
-        workspace_metadata = get_workspace_metadata()
+        rag_instance = get_rag_instance()
+        metadata_store = get_metadata_store()
         
         sources_map = {}
+        processed_doc_ids = set()
         
-        # List all workspaces as sources
-        for workspace_name in WorkspaceManager.list_workspaces():
-            metadata = workspace_metadata.get(workspace_name, {})
-            
-            sources_map[workspace_name] = {
-                "source": workspace_name,
-                "document_count": len(metadata),
-                "example_files": [],
-                "description": f"Workspace: {workspace_name}",
-                "last_indexed": ""
-            }
-            
-            # Get example files and last indexed time from metadata
-            for doc_id, doc_metadata in list(metadata.items())[:5]:
-                filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
-                sources_map[workspace_name]["example_files"].append(filename)
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
                 
-                indexed_at = doc_metadata.get('indexed_at', '')
-                if indexed_at and indexed_at > sources_map[workspace_name]["last_indexed"]:
-                    sources_map[workspace_name]["last_indexed"] = indexed_at
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                if all_docs:
+                    for doc_id, doc_data in all_docs.items():
+                        if doc_id.startswith('[') and ']' in doc_id:
+                            source_name = doc_id.split(']')[0][1:]
+                            processed_doc_ids.add(doc_id)
+                            
+                            if source_name not in sources_map:
+                                sources_map[source_name] = {
+                                    "source": source_name,
+                                    "document_count": 0,
+                                    "example_files": [],
+                                    "description": "",
+                                    "last_indexed": ""
+                                }
+                            
+                            sources_map[source_name]["document_count"] += 1
+                            
+                            if len(sources_map[source_name]["example_files"]) < 5:
+                                filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
+                                sources_map[source_name]["example_files"].append(filename)
+                            
+                            if isinstance(doc_data, dict):
+                                updated_at = doc_data.get('updated_at', '')
+                                if updated_at and (not sources_map[source_name]["last_indexed"] or 
+                                                 updated_at > sources_map[source_name]["last_indexed"]):
+                                    sources_map[source_name]["last_indexed"] = updated_at
+                                    
+            except Exception as e:
+                print(f"Error accessing doc_status storage: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        for doc_id, metadata in metadata_store.items():
+            if doc_id in processed_doc_ids:
+                continue
+                
+            if doc_id.startswith('[') and ']' in doc_id:
+                source_name = doc_id.split(']')[0][1:]
+                
+                if source_name not in sources_map:
+                    sources_map[source_name] = {
+                        "source": source_name,
+                        "document_count": 0,
+                        "example_files": [],
+                        "description": metadata.get('description', ''),
+                        "last_indexed": metadata.get('indexed_at', '')
+                    }
+                
+                sources_map[source_name]["document_count"] += 1
+                
+                if len(sources_map[source_name]["example_files"]) < 5:
+                    filename = doc_id.split(']', 1)[1].strip() if ']' in doc_id else doc_id
+                    sources_map[source_name]["example_files"].append(filename)
+                
+                indexed_at = metadata.get('indexed_at', '')
+                if indexed_at and indexed_at > sources_map[source_name]["last_indexed"]:
+                    sources_map[source_name]["last_indexed"] = indexed_at
         
         sources_list = list(sources_map.values())
         sources_list.sort(key=lambda x: x["document_count"], reverse=True)
@@ -399,50 +449,78 @@ async def delete_documents_by_source(source: str):
 @router.post("/query")
 async def query_with_optional_filtering(request: FilteredQueryRequest):
     """
-    Query the RAG system with optional workspace (source) filtering
+    Query the RAG system with optional source filtering
     """
     try:
-        workspace_instances, WorkspaceManager = get_workspace_instances()
-        default_workspace = get_default_workspace()
+        rag_instance = get_rag_instance()
+        metadata_store = get_metadata_store()
         
         if not request.sources:
-            # Query the default workspace if no sources specified
-            rag = await WorkspaceManager.get_or_create_instance(default_workspace)
             param = QueryParam(
                 mode=request.mode,
                 stream=request.stream
             )
             
-            result = await rag.aquery(request.query, param=param)
+            result = await rag_instance.aquery(request.query, param=param)
             
             return {
                 "query": request.query,
                 "response": result,
-                "mode": request.mode,
-                "workspace": default_workspace
+                "mode": request.mode
             }
         
-        # Query specific workspaces (sources)
-        results = []
-        for source in request.sources:
-            # Each source is a workspace
-            if source not in WorkspaceManager.list_workspaces():
-                continue
-            
-            rag = await WorkspaceManager.get_or_create_instance(source)
-            param = QueryParam(
-                mode=request.mode,
-                stream=request.stream
-            )
-            
-            # Query this workspace
-            result = await rag.aquery(request.query, param=param)
-            results.append({
-                "workspace": source,
-                "response": result
-            })
+        allowed_doc_ids = set()
+        source_patterns = [f"[{source}]" for source in request.sources]
         
-        if not results:
+        for doc_id, metadata in metadata_store.items():
+            file_path = metadata.get('file_path', doc_id)
+            for pattern in source_patterns:
+                if (doc_id.startswith(pattern) or doc_id.startswith(pattern + " ") or 
+                    file_path.startswith(pattern) or file_path.startswith(pattern + " ")):
+                    allowed_doc_ids.add(doc_id)
+                    if file_path != doc_id:
+                        allowed_doc_ids.add(file_path)
+                    break
+        
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
+                
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                if all_docs:
+                    for doc_id in all_docs.keys():
+                        for pattern in source_patterns:
+                            if doc_id.startswith(pattern) or doc_id.startswith(pattern + " "):
+                                allowed_doc_ids.add(doc_id)
+                                break
+            except Exception as e:
+                print(f"Error checking doc_status in query: {e}")
+        
+        if not allowed_doc_ids:
             return {
                 "query": request.query,
                 "response": f"No documents found for the specified sources: {', '.join(request.sources)}",
@@ -451,28 +529,22 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
                 "documents_found": 0
             }
         
-        # If single workspace, return its result directly
-        if len(results) == 1:
-            return {
-                "query": request.query,
-                "response": results[0]["response"],
-                "mode": request.mode,
-                "workspace": results[0]["workspace"],
-                "sources_filtered": request.sources
-            }
+        source_context = f"Focus on information from these sources: {', '.join(request.sources)}. "
+        enhanced_query = source_context + request.query
         
-        # For multiple workspaces, combine results
-        combined_response = "\n\n".join([
-            f"[From {r['workspace']}]:\n{r['response']}" 
-            for r in results
-        ])
+        param = QueryParam(
+            mode=request.mode,
+            stream=request.stream
+        )
+        
+        result = await rag_instance.aquery(enhanced_query, param=param)
         
         return {
             "query": request.query,
-            "response": combined_response,
+            "response": result,
             "mode": request.mode,
             "sources_filtered": request.sources,
-            "workspaces_queried": [r["workspace"] for r in results]
+            "documents_found": len(allowed_doc_ids)
         }
         
     except Exception as e:

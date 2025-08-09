@@ -22,6 +22,7 @@ RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
 
 # Copy scripts and API
 COPY lightrag_extended_api.py /app/
+COPY query_routes.py /app/
 COPY migrate_metadata.py /app/
 COPY download_webui.sh /app/
 COPY build_webui.sh /app/

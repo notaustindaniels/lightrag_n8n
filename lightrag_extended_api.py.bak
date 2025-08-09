@@ -96,9 +96,8 @@ class RelationUpdateRequest(BaseModel):
 
 
 # Global variables
-workspace_instances = {}  # Dictionary to store multiple LightRAG instances by workspace
-workspace_metadata = {}  # Metadata store per workspace
-default_workspace = "default"  # Default workspace for backward compatibility
+rag_instance = None
+metadata_store = {}  # In-memory metadata store
 
 # Supported file extensions
 SUPPORTED_EXTENSIONS = {
@@ -146,139 +145,19 @@ MIME_TO_EXT = {
     'text/x-less': ['less']
 }
 
-# Workspace Manager Class
-class WorkspaceManager:
-    """Manages multiple LightRAG instances for different workspaces"""
-    
-    @staticmethod
-    def extract_workspace_from_doc_id(doc_id: str) -> str:
-        """Extract workspace name from document ID format [workspace] filename"""
-        if doc_id.startswith('[') and ']' in doc_id:
-            return doc_id.split(']')[0][1:]
-        return default_workspace
-    
-    @staticmethod
-    async def get_or_create_instance(workspace: str) -> LightRAG:
-        """Get existing workspace instance or create new one"""
-        if workspace not in workspace_instances:
-            await WorkspaceManager.create_workspace(workspace)
-        return workspace_instances[workspace]
-    
-    @staticmethod
-    async def create_workspace(workspace: str):
-        """Create a new workspace with isolated storage"""
-        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        workspace_dir = os.path.join(base_dir, "workspaces", workspace)
-        os.makedirs(workspace_dir, exist_ok=True)
-        
-        # Create LightRAG instance for this workspace
-        rag = LightRAG(
-            working_dir=workspace_dir,
-            workspace=workspace,  # Set the workspace parameter
-            embedding_func=EmbeddingFunc(
-                embedding_dim=1536,
-                max_token_size=8192,
-                func=openai_embed
-            ),
-            llm_model_func=gpt_4o_mini_complete,
-        )
-        
-        await rag.initialize_storages()
-        await initialize_pipeline_status()
-        
-        workspace_instances[workspace] = rag
-        
-        # Initialize metadata for this workspace
-        if workspace not in workspace_metadata:
-            workspace_metadata[workspace] = {}
-            load_workspace_metadata(workspace)
-        
-        print(f"Created workspace: {workspace} at {workspace_dir}")
-        return rag
-    
-    @staticmethod
-    async def delete_workspace(workspace: str):
-        """Delete a workspace and all its data"""
-        if workspace == default_workspace:
-            raise ValueError("Cannot delete the default workspace")
-        
-        if workspace in workspace_instances:
-            # Clean up the instance
-            del workspace_instances[workspace]
-        
-        if workspace in workspace_metadata:
-            del workspace_metadata[workspace]
-        
-        # Delete workspace directory
-        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        workspace_dir = os.path.join(base_dir, "workspaces", workspace)
-        if os.path.exists(workspace_dir):
-            shutil.rmtree(workspace_dir)
-            print(f"Deleted workspace directory: {workspace_dir}")
-    
-    @staticmethod
-    def list_workspaces() -> List[str]:
-        """List all available workspaces"""
-        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        workspaces_dir = os.path.join(base_dir, "workspaces")
-        
-        workspaces = []
-        if os.path.exists(workspaces_dir):
-            workspaces = [d for d in os.listdir(workspaces_dir) 
-                         if os.path.isdir(os.path.join(workspaces_dir, d))]
-        
-        # Always include active workspaces even if directory doesn't exist yet
-        for ws in workspace_instances.keys():
-            if ws not in workspaces:
-                workspaces.append(ws)
-        
-        return workspaces
-
 def compute_doc_id(content: str) -> str:
     """Compute document ID using MD5 hash of content"""
     return f"doc-{hashlib.md5(content.strip().encode()).hexdigest()}"
 
-def save_metadata_store(workspace: str = None):
-    """Save metadata for a specific workspace or all workspaces"""
-    if workspace:
-        save_workspace_metadata(workspace)
-    else:
-        for ws in workspace_metadata:
-            save_workspace_metadata(ws)
-
-def save_workspace_metadata(workspace: str):
-    """Save metadata for a specific workspace to disk"""
+def save_metadata_store():
+    """Save metadata store to disk"""
     try:
-        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        workspace_dir = os.path.join(base_dir, "workspaces", workspace)
-        os.makedirs(workspace_dir, exist_ok=True)
-        
-        metadata_file = os.path.join(workspace_dir, "document_metadata.json")
-        metadata = workspace_metadata.get(workspace, {})
-        
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        metadata_file = os.path.join(working_dir, "document_metadata.json")
         with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        print(f"Metadata saved for workspace {workspace}: {len(metadata)} documents")
+            json.dump(metadata_store, f, indent=2)
     except Exception as e:
-        print(f"Error saving metadata for workspace {workspace}: {e}")
-
-def load_workspace_metadata(workspace: str):
-    """Load metadata for a specific workspace from disk"""
-    try:
-        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        workspace_dir = os.path.join(base_dir, "workspaces", workspace)
-        metadata_file = os.path.join(workspace_dir, "document_metadata.json")
-        
-        if os.path.exists(metadata_file):
-            with open(metadata_file, 'r') as f:
-                workspace_metadata[workspace] = json.load(f)
-            print(f"Metadata loaded for workspace {workspace}: {len(workspace_metadata[workspace])} documents")
-        else:
-            workspace_metadata[workspace] = {}
-            print(f"No existing metadata for workspace {workspace}, starting fresh")
-    except Exception as e:
-        print(f"Error loading metadata for workspace {workspace}: {e}")
-        workspace_metadata[workspace] = {}
+        print(f"Error saving metadata store: {e}")
 
 def extract_text_from_file(file_content: bytes, file_extension: str, filename: str) -> str:
     """Extract text from various file formats"""
@@ -772,35 +651,62 @@ async def cleanup_all_document_traces(doc_ids: List[str]):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifecycle manager for FastAPI app with workspace support"""
-    
-    # Startup - Initialize default workspace
-    print("Initializing workspace manager...")
-    
-    # Create the default workspace on startup
-    await WorkspaceManager.create_workspace(default_workspace)
-    
-    # Load any existing workspaces
-    base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-    workspaces_dir = os.path.join(base_dir, "workspaces")
-    
-    if os.path.exists(workspaces_dir):
-        for workspace_name in os.listdir(workspaces_dir):
-            workspace_path = os.path.join(workspaces_dir, workspace_name)
-            if os.path.isdir(workspace_path) and workspace_name != default_workspace:
-                try:
-                    await WorkspaceManager.create_workspace(workspace_name)
-                    print(f"Loaded existing workspace: {workspace_name}")
-                except Exception as e:
-                    print(f"Error loading workspace {workspace_name}: {e}")
-    
-    # Maintain backward compatibility - set global rag_instance to default workspace
+    """Lifecycle manager for FastAPI app"""
     global rag_instance
-    rag_instance = workspace_instances.get(default_workspace)
+    
+    # Startup
+    working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+    os.makedirs(working_dir, exist_ok=True)
+    
+    # Initialize metadata store file
+    metadata_file = os.path.join(working_dir, "document_metadata.json")
+    if os.path.exists(metadata_file):
+        try:
+            with open(metadata_file, 'r') as f:
+                global metadata_store
+                metadata_store = json.load(f)
+        except:
+            metadata_store = {}
+    
+    # Check if GraphML file exists and is valid
+    graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+    if os.path.exists(graphml_path):
+        try:
+            # Try to load it to check if it's valid
+            test_graph = nx.read_graphml(graphml_path)
+            print(f"Found existing graph with {test_graph.number_of_nodes()} nodes and {test_graph.number_of_edges()} edges")
+        except Exception as e:
+            print(f"Error reading existing GraphML file: {e}")
+            # Create an empty GraphML file
+            empty_graph = nx.Graph()
+            nx.write_graphml(empty_graph, graphml_path)
+            print("Created new empty GraphML file")
+    
+    # Initialize LightRAG
+    rag_instance = LightRAG(
+        working_dir=working_dir,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=1536,
+            max_token_size=8192,
+            func=openai_embed
+        ),
+        llm_model_func=gpt_4o_mini_complete,
+    )
+    
+    await rag_instance.initialize_storages()
+    await initialize_pipeline_status()
+    
+    # Ensure the graph is properly loaded
+    if hasattr(rag_instance, 'graph_storage') and hasattr(rag_instance.graph_storage, 'load'):
+        try:
+            await rag_instance.graph_storage.load()
+            print("Graph storage loaded successfully")
+        except Exception as e:
+            print(f"Error loading graph storage: {e}")
     
     yield
     
-    # Shutdown - save all workspace metadata
+    # Shutdown - save metadata
     save_metadata_store()
 
 # Create FastAPI app
@@ -862,97 +768,6 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "extended-lightrag"}
-
-# Workspace Management Endpoints
-@app.get("/workspaces")
-async def list_workspaces():
-    """List all available workspaces"""
-    workspaces = WorkspaceManager.list_workspaces()
-    workspace_details = []
-    
-    for ws in workspaces:
-        metadata = workspace_metadata.get(ws, {})
-        workspace_details.append({
-            "name": ws,
-            "document_count": len(metadata),
-            "is_default": ws == default_workspace,
-            "is_active": ws in workspace_instances
-        })
-    
-    return {
-        "workspaces": workspace_details,
-        "total": len(workspaces),
-        "default_workspace": default_workspace
-    }
-
-@app.post("/workspaces/{workspace_name}")
-async def create_workspace(workspace_name: str):
-    """Create a new workspace"""
-    if workspace_name in workspace_instances:
-        raise HTTPException(status_code=400, detail=f"Workspace '{workspace_name}' already exists")
-    
-    try:
-        await WorkspaceManager.create_workspace(workspace_name)
-        return {
-            "status": "success",
-            "message": f"Workspace '{workspace_name}' created successfully",
-            "workspace": workspace_name
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/workspaces/{workspace_name}")
-async def delete_workspace(workspace_name: str):
-    """Delete a workspace and all its data"""
-    if workspace_name == default_workspace:
-        raise HTTPException(status_code=400, detail="Cannot delete the default workspace")
-    
-    if workspace_name not in WorkspaceManager.list_workspaces():
-        raise HTTPException(status_code=404, detail=f"Workspace '{workspace_name}' not found")
-    
-    try:
-        await WorkspaceManager.delete_workspace(workspace_name)
-        return {
-            "status": "success",
-            "message": f"Workspace '{workspace_name}' deleted successfully"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/workspaces/{workspace_name}/stats")
-async def get_workspace_stats(workspace_name: str):
-    """Get statistics for a specific workspace"""
-    if workspace_name not in WorkspaceManager.list_workspaces():
-        raise HTTPException(status_code=404, detail=f"Workspace '{workspace_name}' not found")
-    
-    # Get workspace instance
-    rag = await WorkspaceManager.get_or_create_instance(workspace_name)
-    metadata = workspace_metadata.get(workspace_name, {})
-    
-    # Calculate stats
-    stats = {
-        "workspace": workspace_name,
-        "document_count": len(metadata),
-        "is_active": workspace_name in workspace_instances,
-        "storage_info": {
-            "working_dir": rag.working_dir if rag else None,
-            "workspace_param": rag.workspace if rag else None
-        }
-    }
-    
-    # Try to get graph stats if available
-    if rag and hasattr(rag, 'graph_storage'):
-        try:
-            graph = get_graph_from_storage(rag.graph_storage)
-            if graph:
-                stats["graph_stats"] = {
-                    "nodes": graph.number_of_nodes(),
-                    "edges": graph.number_of_edges()
-                }
-        except:
-            pass
-    
-    return stats
 
 # Graph endpoints
 @app.get("/graph/label/list")
@@ -1691,12 +1506,6 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             # Use the computed hash ID
             custom_id = doc_id
             metadata_key = doc_id
-        
-        # Extract workspace from the custom_id or file_path
-        workspace = WorkspaceManager.extract_workspace_from_doc_id(custom_id)
-        
-        # Get the appropriate RAG instance for this workspace
-        rag = await WorkspaceManager.get_or_create_instance(workspace)
 
         # Store metadata with the correct key
         metadata_entry = {
@@ -1717,8 +1526,8 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
         if request.document_id and 'full_path' in locals():
             metadata_entry["full_path"] = full_path
 
-        # Insert into the workspace's LightRAG instance with custom ID
-        await rag.ainsert(enriched_content, ids=[custom_id], file_paths=[file_path])
+        # Insert into LightRAG with custom ID and wait for processing to complete
+        await rag_instance.ainsert(enriched_content, ids=[custom_id], file_paths=[file_path])
         
         # Wait for processing to complete and verify success
         import asyncio
@@ -1729,17 +1538,15 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
             await asyncio.sleep(1)  # Wait 1 second between checks
             
             # Check document status
-            if hasattr(rag, 'doc_status') and rag.doc_status is not None:
+            if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
                 try:
-                    doc_status_data = await rag.doc_status.get(custom_id)
+                    doc_status_data = await rag_instance.doc_status.get(custom_id)
                     if doc_status_data:
                         status = doc_status_data.get('status', 'unknown')
                         if status == 'processed':
-                            # Successfully processed - now store metadata in the workspace
-                            if workspace not in workspace_metadata:
-                                workspace_metadata[workspace] = {}
-                            workspace_metadata[workspace][metadata_key] = metadata_entry
-                            save_workspace_metadata(workspace)
+                            # Successfully processed - now store metadata
+                            metadata_store[metadata_key] = metadata_entry
+                            save_metadata_store()
                             
                             return {
                                 "status": "success",
@@ -1776,7 +1583,7 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
 
 @app.post("/documents/text")
 async def insert_text(request: TextInsertRequest):
-    """Standard text insertion with workspace support based on file_path prefix"""
+    """Standard text insertion with file_path support and processing verification"""
     try:
         # Compute document ID
         doc_id = compute_doc_id(request.text)
@@ -1784,16 +1591,10 @@ async def insert_text(request: TextInsertRequest):
         # Use provided file_path or create one
         file_path = request.file_path if request.file_path else f"text/{doc_id}.txt"
         
-        # Extract workspace from file_path if it has [workspace] prefix
-        workspace = WorkspaceManager.extract_workspace_from_doc_id(file_path)
-        
-        # Get the appropriate RAG instance for this workspace
-        rag = await WorkspaceManager.get_or_create_instance(workspace)
-        
         # Generate display_name from file_path
         display_name = generate_display_name_from_file_path(file_path, doc_id)
         
-        # Store metadata in the appropriate workspace
+        # Store metadata
         metadata_entry = {
             "id": doc_id,
             "file_path": file_path,
@@ -1803,8 +1604,8 @@ async def insert_text(request: TextInsertRequest):
             "content_summary": request.text[:200] + "..." if len(request.text) > 200 else request.text
         }
         
-        # Insert into the workspace's LightRAG instance
-        await rag.ainsert(request.text, file_paths=[file_path])
+        # Insert into LightRAG with file path and wait for processing
+        await rag_instance.ainsert(request.text, file_paths=[file_path])
         
         # Wait for processing to complete and verify success
         import asyncio
@@ -1815,17 +1616,15 @@ async def insert_text(request: TextInsertRequest):
             await asyncio.sleep(1)  # Wait 1 second between checks
             
             # Check document status
-            if hasattr(rag, 'doc_status') and rag.doc_status is not None:
+            if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
                 try:
-                    doc_status_data = await rag.doc_status.get(doc_id)
+                    doc_status_data = await rag_instance.doc_status.get(doc_id)
                     if doc_status_data:
                         status = doc_status_data.get('status', 'unknown')
                         if status == 'processed':
-                            # Successfully processed - now store metadata in the workspace
-                            if workspace not in workspace_metadata:
-                                workspace_metadata[workspace] = {}
-                            workspace_metadata[workspace][doc_id] = metadata_entry
-                            save_workspace_metadata(workspace)
+                            # Successfully processed - now store metadata
+                            metadata_store[doc_id] = metadata_entry
+                            save_metadata_store()
                             
                             return {
                                 "status": "success",
