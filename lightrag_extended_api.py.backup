@@ -2354,3 +2354,658 @@ async def upload_documents_bulk(
 
 
 
+@app.get("/debug/sources")
+async def debug_sources():
+    """Debug endpoint to understand why sources aren't being detected"""
+    debug_info = {
+        "metadata_store_count": len(metadata_store),
+        "metadata_store_sample": [],
+        "doc_status_methods": [],
+        "doc_status_sample": [],
+        "sources_found": []
+    }
+    
+    # Check metadata store
+    for i, (doc_id, metadata) in enumerate(metadata_store.items()):
+        if i < 5:  # Show first 5
+            debug_info["metadata_store_sample"].append({
+                "doc_id": doc_id,
+                "has_bracket": doc_id.startswith('[') and ']' in doc_id,
+                "file_path": metadata.get('file_path', 'N/A')
+            })
+    
+    # Check doc_status with all methods
+    if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+        doc_status_storage = rag_instance.doc_status
+        
+        # Method 1: get_all
+        if hasattr(doc_status_storage, 'get_all'):
+            try:
+                all_docs = await doc_status_storage.get_all()
+                debug_info["doc_status_methods"].append({
+                    "method": "get_all",
+                    "success": True,
+                    "doc_count": len(all_docs) if all_docs else 0,
+                    "type": type(all_docs).__name__ if all_docs else "None"
+                })
+                
+                # Sample docs
+                if all_docs:
+                    for i, (doc_id, doc_data) in enumerate(all_docs.items()):
+                        if i < 5:
+                            debug_info["doc_status_sample"].append({
+                                "doc_id": doc_id,
+                                "has_bracket": doc_id.startswith('[') and ']' in doc_id,
+                                "source": doc_id.split(']')[0][1:] if doc_id.startswith('[') and ']' in doc_id else "N/A"
+                            })
+                            
+                            # Extract sources
+                            if doc_id.startswith('[') and ']' in doc_id:
+                                source = doc_id.split(']')[0][1:]
+                                if source not in debug_info["sources_found"]:
+                                    debug_info["sources_found"].append(source)
+                                    
+            except Exception as e:
+                debug_info["doc_status_methods"].append({
+                    "method": "get_all",
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        # Method 2: _data
+        if hasattr(doc_status_storage, '_data'):
+            try:
+                storage_data = doc_status_storage._data
+                debug_info["doc_status_methods"].append({
+                    "method": "_data",
+                    "success": True,
+                    "type": type(storage_data).__name__,
+                    "is_dict": isinstance(storage_data, dict),
+                    "doc_count": len(storage_data) if isinstance(storage_data, dict) else "N/A"
+                })
+            except Exception as e:
+                debug_info["doc_status_methods"].append({
+                    "method": "_data",
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        # Method 3: JSON file
+        try:
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            doc_status_file = os.path.join(working_dir, "doc_status.json")
+            debug_info["doc_status_file_exists"] = os.path.exists(doc_status_file)
+            
+            if os.path.exists(doc_status_file):
+                with open(doc_status_file, 'r') as f:
+                    file_data = json.load(f)
+                debug_info["doc_status_methods"].append({
+                    "method": "json_file",
+                    "success": True,
+                    "doc_count": len(file_data) if isinstance(file_data, dict) else "N/A"
+                })
+        except Exception as e:
+            debug_info["doc_status_methods"].append({
+                "method": "json_file",
+                "success": False,
+                "error": str(e)
+            })
+    
+    return debug_info
+
+@app.get("/documents/by-source/{source}")
+async def get_documents_by_source(source: str):
+    """
+    Get all documents for a specific source/library
+    
+    Following the same pattern as /documents/by-sitemap/{sitemap_url}
+    
+    Args:
+        source: The source name (without brackets)
+    
+    Returns:
+        List of documents from that source
+    """
+    try:
+        matching_docs = []
+        source_pattern = f"[{source}]"
+        
+        # Search in metadata store
+        for doc_id, metadata in metadata_store.items():
+            # PRIORITIZE checking doc_id first
+            if doc_id.startswith(source_pattern):
+                # Extract filename after the source pattern
+                filename = doc_id[len(source_pattern):].strip()
+                
+                matching_docs.append({
+                    "id": doc_id,  # Use the actual doc_id as the display ID
+                    "doc_id": doc_id,
+                    "file_path": metadata.get('file_path', f"text/{doc_id}.txt"),
+                    "filename": filename,
+                    "display_name": metadata.get('display_name', doc_id),
+                    "indexed_at": metadata.get('indexed_at'),
+                    "status": "processed"
+                })
+            else:
+                # Only check file_path if doc_id doesn't match
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith(source_pattern):
+                    filename = file_path[len(source_pattern):].strip()
+                    
+                    matching_docs.append({
+                        "id": doc_id,
+                        "doc_id": doc_id,
+                        "file_path": file_path,
+                        "filename": filename,
+                        "display_name": metadata.get('display_name', file_path),
+                        "indexed_at": metadata.get('indexed_at'),
+                        "status": "processed"
+                    })
+        
+        # Also check doc_status (same logic as /documents/sources)
+        processed_doc_ids = {doc["doc_id"] for doc in matching_docs}  # Track what we already found
+        
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
+                
+                # Method 1: Try to get all documents directly
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                # Method 2: Try to iterate through storage if it's dict-like
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                # Method 3: Try JSON storage file directly
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                # Process documents if we found any
+                if all_docs:
+                    for doc_id, doc_data in all_docs.items():
+                        # Skip if we already processed this doc from metadata_store
+                        if doc_id in processed_doc_ids:
+                            continue
+                        
+                        # Check if doc_id matches [source] pattern
+                        if doc_id.startswith(source_pattern) or doc_id.startswith(source_pattern + " "):
+                            filename = doc_id[len(source_pattern):].strip()
+                            
+                            matching_docs.append({
+                                "id": doc_id,
+                                "doc_id": doc_id,
+                                "file_path": doc_id,  # Use doc_id as file_path since we don't have metadata
+                                "filename": filename,
+                                "display_name": doc_id,
+                                "indexed_at": doc_data.get('indexed_at', '') if isinstance(doc_data, dict) else '',
+                                "status": doc_data.get('status', 'processed') if isinstance(doc_data, dict) else 'processed'
+                            })
+            except Exception as e:
+                print(f"Error checking doc_status: {e}")
+        
+        # Sort by filename
+        matching_docs.sort(key=lambda x: x["filename"])
+        
+        # Return in the same format as /documents
+        return {
+            "source": source,
+            "documents": matching_docs,
+            "count": len(matching_docs)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/documents/by-source/{source}")
+async def delete_documents_by_source(source: str):
+    """
+    Delete all documents for a specific source
+    
+    Following the same pattern as DELETE /documents/by-sitemap/{sitemap_url}
+    
+    Args:
+        source: The source name (without brackets)
+    
+    Returns:
+        Deletion status
+    """
+    try:
+        # Find all documents with this source
+        docs_to_delete = []
+        metadata_keys_to_delete = []
+        source_pattern = f"[{source}]"
+        
+        for doc_id, metadata in metadata_store.items():
+            # PRIORITIZE checking doc_id first
+            if doc_id.startswith(source_pattern):
+                metadata_keys_to_delete.append(doc_id)
+                docs_to_delete.append(doc_id)
+                
+                # Also add any variations that might exist
+                original_id = metadata.get('original_doc_id')
+                if original_id and original_id != doc_id:
+                    docs_to_delete.append(original_id)
+            else:
+                # Only check file_path if doc_id doesn't match
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith(source_pattern):
+                    metadata_keys_to_delete.append(doc_id)
+                    docs_to_delete.append(doc_id)
+                    
+                    # Add variations
+                    original_id = metadata.get('original_doc_id', doc_id)
+                    if original_id not in docs_to_delete:
+                        docs_to_delete.append(original_id)
+                    if file_path not in docs_to_delete:
+                        docs_to_delete.append(file_path)
+        
+        if docs_to_delete:
+            unique_docs_to_delete = list(set(docs_to_delete))
+            
+            # Clean up all document traces
+            await cleanup_all_document_traces(unique_docs_to_delete)
+            
+            # Call standard delete
+            try:
+                await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
+            except Exception as e:
+                print(f"Error in adelete_by_doc_id: {e}")
+            
+            # Remove from metadata store
+            for key in metadata_keys_to_delete:
+                if key in metadata_store:
+                    del metadata_store[key]
+            
+            # Save updated metadata
+            save_metadata_store()
+            
+            # Force save the graph
+            working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+                graph_storage = rag_instance.chunk_entity_relation_graph
+                graph = get_graph_from_storage(graph_storage)
+                if graph:
+                    force_save_graph_to_disk(graph, working_dir)
+            
+            time.sleep(0.5)
+        
+        return {
+            "status": "success",
+            "message": f"Deleted {len(metadata_keys_to_delete)} documents for source {source}",
+            "deleted_count": len(metadata_keys_to_delete),
+            "deleted_ids": unique_docs_to_delete if 'unique_docs_to_delete' in locals() else [],
+            "source": source
+        }
+        
+    except Exception as e:
+        print(f"Error in delete_documents_by_source: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/query")
+async def query_with_optional_filtering(request: FilteredQueryRequest):
+    """
+    Query the RAG system with optional source filtering
+    """
+    try:
+        # If no sources specified, use standard query
+        if not request.sources:
+            # Only pass the parameters that QueryParam actually accepts
+            param = QueryParam(
+                mode=request.mode,
+                stream=request.stream
+            )
+            
+            result = await rag_instance.aquery(request.query, param=param)
+            
+            return {
+                "query": request.query,
+                "response": result,
+                "mode": request.mode
+            }
+        
+        # If sources are specified, filter the search
+        allowed_doc_ids = set()
+        source_patterns = [f"[{source}]" for source in request.sources]
+        
+        # Collect doc_ids from metadata store
+        for doc_id, metadata in metadata_store.items():
+            file_path = metadata.get('file_path', doc_id)
+            for pattern in source_patterns:
+                # Check both with and without space after bracket for compatibility
+                if (doc_id.startswith(pattern) or doc_id.startswith(pattern + " ") or 
+                    file_path.startswith(pattern) or file_path.startswith(pattern + " ")):
+                    allowed_doc_ids.add(doc_id)
+                    if file_path != doc_id:
+                        allowed_doc_ids.add(file_path)
+                    break
+        
+        # Also check doc_status (using same robust approach as /documents/by-source)
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            try:
+                doc_status_storage = rag_instance.doc_status
+                all_docs = None
+                
+                # Method 1: Try to get all documents directly
+                if hasattr(doc_status_storage, 'get_all'):
+                    try:
+                        all_docs = await doc_status_storage.get_all()
+                    except Exception as e:
+                        print(f"Error with get_all method: {e}")
+                
+                # Method 2: Try to iterate through storage if it's dict-like
+                if not all_docs and hasattr(doc_status_storage, '_data'):
+                    try:
+                        storage_data = doc_status_storage._data
+                        if isinstance(storage_data, dict):
+                            all_docs = storage_data
+                    except Exception as e:
+                        print(f"Error accessing _data: {e}")
+                
+                # Method 3: Try JSON storage file directly
+                if not all_docs:
+                    try:
+                        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+                        doc_status_file = os.path.join(working_dir, "doc_status.json")
+                        if os.path.exists(doc_status_file):
+                            with open(doc_status_file, 'r') as f:
+                                all_docs = json.load(f)
+                    except Exception as e:
+                        print(f"Error reading doc_status.json: {e}")
+                
+                # Process documents if we found any
+                if all_docs:
+                    for doc_id in all_docs.keys():
+                        for pattern in source_patterns:
+                            # Check both with and without space after bracket for compatibility
+                            if doc_id.startswith(pattern) or doc_id.startswith(pattern + " "):
+                                allowed_doc_ids.add(doc_id)
+                                break
+            except Exception as e:
+                print(f"Error checking doc_status in query: {e}")
+        
+        if not allowed_doc_ids:
+            return {
+                "query": request.query,
+                "response": f"No documents found for the specified sources: {', '.join(request.sources)}",
+                "mode": request.mode,
+                "sources_filtered": request.sources,
+                "documents_found": 0
+            }
+        
+        # Enhance query with source context
+        source_context = f"Focus on information from these sources: {', '.join(request.sources)}. "
+        enhanced_query = source_context + request.query
+        
+        # Perform the query
+        # Only pass the parameters that QueryParam actually accepts
+        param = QueryParam(
+            mode=request.mode,
+            stream=request.stream
+        )
+        
+        result = await rag_instance.aquery(enhanced_query, param=param)
+        
+        return {
+            "query": request.query,
+            "response": result,
+            "mode": request.mode,
+            "sources_filtered": request.sources,
+            "documents_found": len(allowed_doc_ids)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Streaming version
+@app.post("/query/stream")
+async def query_stream_with_optional_filtering(request: FilteredQueryRequest):
+    """
+    Stream query responses with optional source filtering
+    
+    This extends the standard /query/stream endpoint to support optional source filtering.
+    """
+    try:
+        # Set stream to True for this endpoint
+        request.stream = True
+        
+        # If no sources specified, use standard streaming query
+        if not request.sources:
+            param = QueryParam(
+                mode=request.mode,
+                stream=True,
+                only_need_context=request.only_need_context,
+                response_type=request.response_type,
+                top_k=request.top_k,
+                max_token_for_text_unit=request.max_token_for_text_unit,
+                max_token_for_global_context=request.max_token_for_global_context,
+                max_token_for_local_context=request.max_token_for_local_context
+            )
+            
+            # This would need to be implemented as a proper streaming response
+            # For now, returning a simple response
+            result = await rag_instance.aquery(request.query, param=param)
+            
+            return {
+                "query": request.query,
+                "response": result,
+                "mode": request.mode,
+                "stream": True
+            }
+        
+        # Similar filtering logic as above but for streaming
+        # Implementation would depend on your streaming infrastructure
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Statistics endpoint following graph endpoint patterns
+@app.get("/graph/sources/{source}/stats")
+async def get_source_graph_statistics(source: str):
+    """
+    Get graph statistics for a specific source
+    
+    Following the pattern of graph endpoints like /graph/label/list
+    
+    Returns information about the knowledge graph coverage for this source.
+    """
+    try:
+        source_pattern = f"[{source}]"
+        stats = {
+            "source": source,
+            "document_count": 0,
+            "total_chunks": 0,
+            "entities_count": 0,
+            "relationships_count": 0,
+            "file_types": {},
+            "latest_update": None,
+            "oldest_document": None
+        }
+        
+        # Count documents and gather stats
+        doc_ids_in_source = set()
+        
+        for doc_id, metadata in metadata_store.items():
+            # PRIORITIZE checking doc_id first
+            if doc_id.startswith(source_pattern):
+                doc_ids_in_source.add(doc_id)
+                stats["document_count"] += 1
+                
+                # Track file types from file_path
+                file_path = metadata.get('file_path', doc_id)
+                if '.' in file_path:
+                    ext = file_path.split('.')[-1].lower()
+                    stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
+                
+                # Track dates
+                indexed_at = metadata.get('indexed_at', '')
+                if indexed_at:
+                    if not stats["latest_update"] or indexed_at > stats["latest_update"]:
+                        stats["latest_update"] = indexed_at
+                    if not stats["oldest_document"] or indexed_at < stats["oldest_document"]:
+                        stats["oldest_document"] = indexed_at
+            else:
+                # Only check file_path if doc_id doesn't match
+                file_path = metadata.get('file_path', '')
+                if file_path.startswith(source_pattern):
+                    doc_ids_in_source.add(doc_id)
+                    stats["document_count"] += 1
+                    
+                    # Track file types
+                    if '.' in file_path:
+                        ext = file_path.split('.')[-1].lower()
+                        stats["file_types"][ext] = stats["file_types"].get(ext, 0) + 1
+                    
+                    # Track dates
+                    indexed_at = metadata.get('indexed_at', '')
+                    if indexed_at:
+                        if not stats["latest_update"] or indexed_at > stats["latest_update"]:
+                            stats["latest_update"] = indexed_at
+                        if not stats["oldest_document"] or indexed_at < stats["oldest_document"]:
+                            stats["oldest_document"] = indexed_at
+        
+        # Get chunk and entity counts from vector databases
+        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        
+        # Check chunks
+        chunks_file = os.path.join(working_dir, "vdb_chunks.json")
+        if os.path.exists(chunks_file):
+            try:
+                with open(chunks_file, 'r') as f:
+                    chunks_data = json.load(f)
+                    if 'data' in chunks_data:
+                        for chunk in chunks_data['data']:
+                            if chunk.get('source_id', '') in doc_ids_in_source:
+                                stats["total_chunks"] += 1
+            except:
+                pass
+        
+        # Check entities and relationships
+        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
+            graph_storage = rag_instance.chunk_entity_relation_graph
+            graph = get_graph_from_storage(graph_storage)
+            
+            if graph:
+                # Count entities and relationships from this source
+                for node_id, node_data in graph.nodes(data=True):
+                    source_id = node_data.get('source_id', '')
+                    for doc_id in doc_ids_in_source:
+                        if doc_id in source_id:
+                            stats["entities_count"] += 1
+                            break
+                
+                for src, tgt, edge_data in graph.edges(data=True):
+                    source_id = edge_data.get('source_id', '')
+                    for doc_id in doc_ids_in_source:
+                        if doc_id in source_id:
+                            stats["relationships_count"] += 1
+                            break
+        
+        return stats
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/status/{doc_id}")
+async def get_document_status(doc_id: str):
+    """Get the processing status of a specific document"""
+    try:
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            doc_status_data = await rag_instance.doc_status.get(doc_id)
+            if doc_status_data:
+                return {
+                    "doc_id": doc_id,
+                    "status": doc_status_data.get('status', 'unknown'),
+                    "error": doc_status_data.get('error'),
+                    "created_at": doc_status_data.get('created_at'),
+                    "updated_at": doc_status_data.get('updated_at'),
+                    "content_length": doc_status_data.get('content_length'),
+                    "chunks_count": doc_status_data.get('chunks_count')
+                }
+            else:
+                raise HTTPException(status_code=404, detail="Document not found")
+        else:
+            raise HTTPException(status_code=500, detail="Document status storage not available")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/status")
+async def get_all_document_statuses():
+    """Get processing status of all documents"""
+    try:
+        if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
+            # Get documents by status
+            pending_docs = await rag_instance.doc_status.get_docs_by_status("pending")
+            processing_docs = await rag_instance.doc_status.get_docs_by_status("processing") 
+            processed_docs = await rag_instance.doc_status.get_docs_by_status("processed")
+            failed_docs = await rag_instance.doc_status.get_docs_by_status("failed")
+            
+            return {
+                "statuses": {
+                    "pending": {
+                        "count": len(pending_docs),
+                        "documents": list(pending_docs.keys())
+                    },
+                    "processing": {
+                        "count": len(processing_docs),
+                        "documents": list(processing_docs.keys())
+                    },
+                    "processed": {
+                        "count": len(processed_docs),
+                        "documents": list(processed_docs.keys())
+                    },
+                    "failed": {
+                        "count": len(failed_docs),
+                        "documents": [{"id": doc_id, "error": doc_data.get('error', 'Unknown error')} 
+                                    for doc_id, doc_data in failed_docs.items()]
+                    }
+                },
+                "total": len(pending_docs) + len(processing_docs) + len(processed_docs) + len(failed_docs)
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Document status storage not available")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Startup code for running directly
+if __name__ == "__main__":
+    import uvicorn
+    import asyncio
+    
+    # Get configuration from environment
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "9621"))
+    
+    print(f"Starting LightRAG Extended API Server on {host}:{port}")
+    print(f"Working directory: {os.getenv('WORKING_DIR', '/app/data/rag_storage')}")
+    
+    # Run the server
+    uvicorn.run(
+        "lightrag_extended_api:app",
+        host=host,
+        port=port,
+        log_level="info",
+        access_log=True
+    )
+
+    # test comment
