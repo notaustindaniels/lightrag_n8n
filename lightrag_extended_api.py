@@ -1305,6 +1305,11 @@ async def get_knowledge_graph(
             label = None
             print("Empty label converted to None")
         
+        # Handle wildcard for all nodes
+        if label == "*":
+            print("Wildcard label '*' requested - returning combined graph")
+            label = None  # Treat as combined graph request
+        
         # If label is provided, try workspace-specific methods first
         if label:
             for workspace_name, rag in workspace_instances.items():
