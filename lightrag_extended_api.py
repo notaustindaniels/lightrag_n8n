@@ -1355,12 +1355,25 @@ async def get_knowledge_graph(
                     visited.add(current_node)
                     nodes_to_include.add(current_node)
                     
-                    # Get neighbors
+                    # Get neighbors and their edge data
                     if hasattr(graph, 'neighbors'):
                         for neighbor in graph.neighbors(current_node):
                             if neighbor not in visited and depth + 1 <= max_depth:
                                 queue.append((neighbor, depth + 1))
-                                edges_to_include.append({"source": current_node, "target": neighbor})
+                                # Get edge data if available
+                                edge_data = {}
+                                if hasattr(graph, 'get_edge_data'):
+                                    edge_data = graph.get_edge_data(current_node, neighbor) or {}
+                                
+                                edge_dict = {
+                                    "id": f"{current_node}-{neighbor}",  # Generate edge ID
+                                    "source": current_node,
+                                    "target": neighbor,
+                                    "type": edge_data.get('keywords', None),  # Use keywords as type if available
+                                    "properties": {k: v for k, v in edge_data.items() 
+                                                 if k != 'keywords' and isinstance(v, (str, int, float, bool, list, dict))}
+                                }
+                                edges_to_include.append(edge_dict)
             else:
                 print(f"Label '{label}' not found in graph")
         else:
@@ -1368,11 +1381,21 @@ async def get_knowledge_graph(
             all_nodes = list(graph.nodes())
             nodes_to_include = set(all_nodes[:max_nodes])
             
-            # Include edges between the selected nodes
-            for edge in graph.edges():
-                source, target = edge
+            # Include edges between the selected nodes with their data
+            for edge in graph.edges(data=True):
+                source, target = edge[0], edge[1]
+                edge_data = edge[2] if len(edge) > 2 else {}
+                
                 if source in nodes_to_include and target in nodes_to_include:
-                    edges_to_include.append({"source": source, "target": target})
+                    edge_dict = {
+                        "id": f"{source}-{target}",  # Generate edge ID
+                        "source": source,
+                        "target": target,
+                        "type": edge_data.get('keywords', None),  # Use keywords as type if available
+                        "properties": {k: v for k, v in edge_data.items() 
+                                     if k != 'keywords' and isinstance(v, (str, int, float, bool, list, dict))}
+                    }
+                    edges_to_include.append(edge_dict)
         
         print(f"Returning {len(nodes_to_include)} nodes and {len(edges_to_include)} edges")
         
