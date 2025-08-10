@@ -1,0 +1,102 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd"><key id="d11" for="edge" attr.name="created_at" attr.type="long"/>
+<key id="d10" for="edge" attr.name="file_path" attr.type="string"/>
+<key id="d9" for="edge" attr.name="source_id" attr.type="string"/>
+<key id="d8" for="edge" attr.name="keywords" attr.type="string"/>
+<key id="d7" for="edge" attr.name="description" attr.type="string"/>
+<key id="d6" for="edge" attr.name="weight" attr.type="double"/>
+<key id="d5" for="node" attr.name="created_at" attr.type="long"/>
+<key id="d4" for="node" attr.name="file_path" attr.type="string"/>
+<key id="d3" for="node" attr.name="source_id" attr.type="string"/>
+<key id="d2" for="node" attr.name="description" attr.type="string"/>
+<key id="d1" for="node" attr.name="entity_type" attr.type="string"/>
+<key id="d0" for="node" attr.name="entity_id" attr.type="string"/>
+<graph edgedefault="undirected"><node id="LightRAG">
+  <data key="d0">LightRAG</data>
+  <data key="d1">organization</data>
+  <data key="d2">LightRAG is a Python library designed for creating Retrieval-Augmented Generation (RAG) systems, utilizing knowledge graphs for efficient information storage and retrieval.</data>
+  <data key="d3">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d4">[test] lightrag_overview</data>
+  <data key="d5">1754850810</data>
+</node>
+<node id="Python">
+  <data key="d0">Python</data>
+  <data key="d1">category</data>
+  <data key="d2">Python is a high-level programming language used widely for various applications, including the development of libraries like LightRAG.</data>
+  <data key="d3">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d4">[test] lightrag_overview</data>
+  <data key="d5">1754850810</data>
+</node>
+<node id="Retrieval-Augmented Generation (RAG)">
+  <data key="d0">Retrieval-Augmented Generation (RAG)</data>
+  <data key="d1">event</data>
+  <data key="d2">Retrieval-Augmented Generation (RAG) refers to a framework for enhancing machine learning models with external data retrieval capabilities.</data>
+  <data key="d3">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d4">[test] lightrag_overview</data>
+  <data key="d5">1754850810</data>
+</node>
+<node id="OpenAI">
+  <data key="d0">OpenAI</data>
+  <data key="d1">organization</data>
+  <data key="d2">OpenAI is a research organization that provides large language models (LLMs) that can be integrated into various applications, including those built with LightRAG.</data>
+  <data key="d3">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d4">[test] lightrag_overview</data>
+  <data key="d5">1754850810</data>
+</node>
+<node id="Knowledge Graphs">
+  <data key="d0">Knowledge Graphs</data>
+  <data key="d1">category</data>
+  <data key="d2">Knowledge graphs are structured representations of information that enable effective storage and retrieval of data in systems like LightRAG.</data>
+  <data key="d3">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d4">[test] lightrag_overview</data>
+  <data key="d5">1754850810</data>
+</node>
+<node id="LLM Providers">
+  <data key="d0">LLM Providers</data>
+  <data key="d1">category</data>
+  <data key="d2">LLM providers are organizations or entities that offer large language models for various applications, contributing to system functionalities like those of LightRAG.</data>
+  <data key="d3">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d4">[test] lightrag_overview</data>
+  <data key="d5">1754850810</data>
+</node>
+<edge source="LightRAG" target="Python">
+  <data key="d6">8.0</data>
+  <data key="d7">LightRAG is built using the Python programming language, showcasing its applications in software development.</data>
+  <data key="d8">development,programming language</data>
+  <data key="d9">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d10">[test] lightrag_overview</data>
+  <data key="d11">1754850810</data>
+</edge>
+<edge source="LightRAG" target="Retrieval-Augmented Generation (RAG)">
+  <data key="d6">9.0</data>
+  <data key="d7">LightRAG is specifically aimed at enabling systems based on the Retrieval-Augmented Generation framework, enhancing traditional model capabilities.</data>
+  <data key="d8">framework integration,system design</data>
+  <data key="d9">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d10">[test] lightrag_overview</data>
+  <data key="d11">1754850810</data>
+</edge>
+<edge source="LightRAG" target="OpenAI">
+  <data key="d6">8.0</data>
+  <data key="d7">LightRAG supports various LLM providers, including OpenAI, for enhanced retrieval capabilities.</data>
+  <data key="d8">support,technology integration</data>
+  <data key="d9">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d10">[test] lightrag_overview</data>
+  <data key="d11">1754850811</data>
+</edge>
+<edge source="LightRAG" target="Knowledge Graphs">
+  <data key="d6">9.0</data>
+  <data key="d7">LightRAG utilizes knowledge graphs to efficiently store and retrieve data, which is a core aspect of its functionality.</data>
+  <data key="d8">data management,information retrieval</data>
+  <data key="d9">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d10">[test] lightrag_overview</data>
+  <data key="d11">1754850811</data>
+</edge>
+<edge source="OpenAI" target="LLM Providers">
+  <data key="d6">7.0</data>
+  <data key="d7">OpenAI is one of the key LLM providers that contribute to enhancing the functionalities of systems like LightRAG.</data>
+  <data key="d8">language models,technology</data>
+  <data key="d9">chunk-8fb4c4b9ed606cf9480762b684cfafc7</data>
+  <data key="d10">[test] lightrag_overview</data>
+  <data key="d11">1754850810</data>
+</edge>
+</graph></graphml>

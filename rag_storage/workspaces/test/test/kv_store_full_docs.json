@@ -1,0 +1,8 @@
+{
+  "[test] lightrag_overview": {
+    "content": "LightRAG is a Python library for building Retrieval-Augmented Generation (RAG) systems. It uses knowledge graphs to store and retrieve information efficiently. The library supports various LLM providers including OpenAI and local models.",
+    "create_time": 1754850793,
+    "update_time": 1754850793,
+    "_id": "[test] lightrag_overview"
+  }
+}
