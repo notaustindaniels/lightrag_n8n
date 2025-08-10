@@ -178,9 +178,10 @@ class WorkspaceManager:
         print(f"Workspace directory: {workspace_dir}")
         
         # Create LightRAG instance for this workspace
+        # Note: Don't pass workspace parameter as it creates nested directories
+        # The working_dir already provides isolation
         rag = LightRAG(
             working_dir=workspace_dir,
-            workspace=workspace,  # Set the workspace parameter
             embedding_func=EmbeddingFunc(
                 embedding_dim=1536,
                 max_token_size=8192,
@@ -192,27 +193,45 @@ class WorkspaceManager:
         await rag.initialize_storages()
         await initialize_pipeline_status()
         
-        # Check if graph exists and try to load it
+        # After initialization, the NetworkXStorage should have loaded the graph automatically
+        # Let's verify it was loaded correctly
         graphml_path = os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml")
         if os.path.exists(graphml_path):
+            print(f"Found existing GraphML file: {graphml_path}")
             try:
-                print(f"Found existing GraphML file: {graphml_path}")
-                # Try to load the graph into the rag instance
+                # Check if the graph was loaded properly
                 if hasattr(rag, 'chunk_entity_relation_graph'):
-                    loaded_graph = nx.read_graphml(graphml_path)
-                    print(f"Loaded graph with {loaded_graph.number_of_nodes()} nodes and {loaded_graph.number_of_edges()} edges")
+                    storage = rag.chunk_entity_relation_graph
                     
-                    # Try to set the graph on the storage object
-                    if hasattr(rag.chunk_entity_relation_graph, '_graph'):
-                        rag.chunk_entity_relation_graph._graph = loaded_graph
-                    elif hasattr(rag.chunk_entity_relation_graph, 'graph'):
-                        rag.chunk_entity_relation_graph.graph = loaded_graph
-                    else:
-                        print(f"Warning: Could not set graph on storage object")
-                else:
-                    print(f"Warning: rag instance has no chunk_entity_relation_graph attribute")
+                    # Try to get the graph from storage to verify it's loaded
+                    if hasattr(storage, '_get_graph'):
+                        graph = await storage._get_graph()
+                        if graph is not None and hasattr(graph, 'number_of_nodes'):
+                            print(f"Graph loaded successfully with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
+                        else:
+                            print(f"Warning: Graph appears to be empty or not loaded")
+                            # Try manual loading as fallback
+                            try:
+                                loaded_graph = nx.read_graphml(graphml_path)
+                                if loaded_graph.number_of_nodes() > 0:
+                                    print(f"Manually loading graph with {loaded_graph.number_of_nodes()} nodes")
+                                    if hasattr(storage, '_graph'):
+                                        storage._graph = loaded_graph
+                                        # Mark storage as updated
+                                        if hasattr(storage, 'storage_updated') and storage.storage_updated:
+                                            storage.storage_updated.value = False
+                            except Exception as e:
+                                print(f"Error during manual graph loading: {e}")
+                    elif hasattr(storage, '_graph'):
+                        # Direct access for older versions
+                        if storage._graph is not None and hasattr(storage._graph, 'number_of_nodes'):
+                            print(f"Graph accessible with {storage._graph.number_of_nodes()} nodes")
+                        else:
+                            print(f"Warning: Graph not properly loaded")
             except Exception as e:
-                print(f"Error loading GraphML file: {e}")
+                print(f"Error verifying graph load: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print(f"No existing GraphML file found at {graphml_path}")
         
@@ -609,17 +628,23 @@ async def get_graph_from_storage(storage_or_graph):
             # Try to call a NetworkX-specific method
             storage_or_graph.number_of_nodes()
             return storage_or_graph
-        except AttributeError:
+        except (AttributeError, TypeError):
             pass
     
     # For NetworkXStorage, use the proper async method
     if hasattr(storage_or_graph, '_get_graph'):
         try:
             # This is the NetworkXStorage class from lightrag
+            # First ensure it's initialized
+            if hasattr(storage_or_graph, 'initialize') and not hasattr(storage_or_graph, '_storage_lock'):
+                await storage_or_graph.initialize()
             graph = await storage_or_graph._get_graph()
             return graph
         except Exception as e:
             print(f"Error getting graph from NetworkXStorage: {e}")
+            # Try to access the _graph attribute directly as fallback
+            if hasattr(storage_or_graph, '_graph'):
+                return storage_or_graph._graph
     
     # Try to get graph from storage object (non-async methods)
     if hasattr(storage_or_graph, '_graph'):
@@ -630,14 +655,23 @@ async def get_graph_from_storage(storage_or_graph):
         # Check if get_graph is async
         import inspect
         if inspect.iscoroutinefunction(storage_or_graph.get_graph):
-            return await storage_or_graph.get_graph()
+            try:
+                return await storage_or_graph.get_graph()
+            except Exception as e:
+                print(f"Error calling async get_graph: {e}")
+                return None
         else:
-            return storage_or_graph.get_graph()
+            try:
+                return storage_or_graph.get_graph()
+            except Exception as e:
+                print(f"Error calling get_graph: {e}")
+                return None
     elif hasattr(storage_or_graph, 'data'):
         return storage_or_graph.data
     
-    # If all else fails, return the object itself
-    return storage_or_graph
+    # If all else fails, return None instead of the object itself
+    print(f"Warning: Could not extract graph from storage object of type {type(storage_or_graph)}")
+    return None
 
 def force_save_graph_to_disk(graph, working_dir):
     """Force save graph to disk with multiple fallback methods"""
@@ -1726,74 +1760,112 @@ async def clear_knowledge_graph():
 
 @app.get("/graph/debug")
 async def debug_graph_sources():
-    """Debug endpoint to check all possible sources of graph data"""
+    """Debug endpoint to check all possible sources of graph data across all workspaces"""
     try:
-        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
         debug_info = {
-            "working_dir": working_dir,
-            "in_memory_graph": {},
-            "files": {},
-            "rag_attributes": []
+            "base_dir": base_dir,
+            "workspaces": {},
+            "total_nodes": 0,
+            "total_edges": 0
         }
         
-        # Check in-memory graph
-        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-            graph_storage = rag_instance.chunk_entity_relation_graph
-            graph = get_graph_from_storage(graph_storage)
-            
-            debug_info["in_memory_graph"] = {
-                "exists": True,
-                "storage_type": type(graph_storage).__name__,
-                "graph_type": type(graph).__name__ if graph else "None",
-                "nodes": graph.number_of_nodes() if graph and hasattr(graph, 'number_of_nodes') else 0,
-                "edges": graph.number_of_edges() if graph and hasattr(graph, 'number_of_edges') else 0
+        # Check each workspace
+        for workspace_name, rag in workspace_instances.items():
+            workspace_info = {
+                "working_dir": rag.working_dir if hasattr(rag, 'working_dir') else "unknown",
+                "in_memory_graph": {},
+                "files": {},
+                "metadata_count": len(workspace_metadata.get(workspace_name, {}))
             }
-        else:
-            debug_info["in_memory_graph"]["exists"] = False
-        
-        # Check all potential files
-        files_to_check = [
-            "graph_chunk_entity_relation.graphml",
-            "vdb_entities.json",
-            "vdb_relationships.json",
-            "vdb_chunks.json",
-            "graph_data.json",
-            "kv_store_text_chunks.json",
-            "kv_store_full_docs.json",
-            "doc_status.json"
-        ]
-        
-        for file_name in files_to_check:
-            file_path = os.path.join(working_dir, file_name)
-            if os.path.exists(file_path):
-                file_info = {
+            
+            # Check in-memory graph
+            if hasattr(rag, 'chunk_entity_relation_graph'):
+                graph_storage = rag.chunk_entity_relation_graph
+                graph = await get_graph_from_storage(graph_storage)
+                
+                node_count = 0
+                edge_count = 0
+                if graph and hasattr(graph, 'number_of_nodes'):
+                    node_count = graph.number_of_nodes()
+                    edge_count = graph.number_of_edges()
+                    debug_info["total_nodes"] += node_count
+                    debug_info["total_edges"] += edge_count
+                
+                workspace_info["in_memory_graph"] = {
                     "exists": True,
-                    "size": os.path.getsize(file_path)
+                    "storage_type": type(graph_storage).__name__,
+                    "graph_type": type(graph).__name__ if graph else "None",
+                    "nodes": node_count,
+                    "edges": edge_count,
+                    "has_graph_attr": hasattr(graph_storage, '_graph'),
+                    "has_get_graph": hasattr(graph_storage, '_get_graph'),
+                    "storage_initialized": hasattr(graph_storage, '_storage_lock')
                 }
-                
-                # For JSON files, try to get entity count
-                if file_name.endswith('.json'):
-                    try:
-                        with open(file_path, 'r') as f:
-                            data = json.load(f)
-                            if isinstance(data, dict):
-                                if 'data' in data:
-                                    file_info["entity_count"] = len(data['data'])
-                                else:
-                                    file_info["key_count"] = len(data)
-                            elif isinstance(data, list):
-                                file_info["item_count"] = len(data)
-                    except Exception as e:
-                        file_info["read_error"] = str(e)
-                
-                debug_info["files"][file_name] = file_info
             else:
-                debug_info["files"][file_name] = {"exists": False}
+                workspace_info["in_memory_graph"]["exists"] = False
+            
+            
+            # Check files for this workspace
+            files_to_check = [
+                "graph_chunk_entity_relation.graphml",
+                "vdb_entities.json",
+                "vdb_relationships.json",
+                "vdb_chunks.json",
+                "kv_store_text_chunks.json",
+                "kv_store_full_docs.json",
+                "doc_status.json"
+            ]
+            
+            workspace_dir = workspace_info["working_dir"]
+            for file_name in files_to_check:
+                file_path = os.path.join(workspace_dir, file_name)
+                if os.path.exists(file_path):
+                    file_info = {
+                        "exists": True,
+                        "size": os.path.getsize(file_path),
+                        "modified": os.path.getmtime(file_path)
+                    }
+                    
+                    # Special handling for GraphML files
+                    if file_name.endswith('.graphml'):
+                        try:
+                            test_graph = nx.read_graphml(file_path)
+                            file_info["nodes_in_file"] = test_graph.number_of_nodes()
+                            file_info["edges_in_file"] = test_graph.number_of_edges()
+                        except Exception as e:
+                            file_info["read_error"] = str(e)
+                    
+                    # For JSON files, try to get entity count
+                    elif file_name.endswith('.json'):
+                        try:
+                            with open(file_path, 'r') as f:
+                                data = json.load(f)
+                                if isinstance(data, dict):
+                                    if 'data' in data:
+                                        file_info["entity_count"] = len(data['data'])
+                                    else:
+                                        file_info["key_count"] = len(data)
+                                elif isinstance(data, list):
+                                    file_info["item_count"] = len(data)
+                        except Exception as e:
+                            file_info["read_error"] = str(e)
+                    
+                    workspace_info["files"][file_name] = file_info
+                else:
+                    workspace_info["files"][file_name] = {"exists": False}
+            
+            debug_info["workspaces"][workspace_name] = workspace_info
         
-        # Check RAG instance attributes
-        for attr in dir(rag_instance):
-            if not attr.startswith('_') and ('vdb' in attr or 'vector' in attr or 'graph' in attr):
-                debug_info["rag_attributes"].append(attr)
+        # Legacy check for old working_dir (for backward compatibility)
+        old_working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        if os.path.exists(old_working_dir):
+            old_graphml = os.path.join(old_working_dir, "graph_chunk_entity_relation.graphml")
+            if os.path.exists(old_graphml):
+                debug_info["legacy_graphml"] = {
+                    "path": old_graphml,
+                    "size": os.path.getsize(old_graphml)
+                }
         
         return debug_info
         
@@ -1802,58 +1874,77 @@ async def debug_graph_sources():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/graph/reload")
-async def reload_graph():
-    """Force reload the graph from the GraphML file"""
+async def reload_graph(workspace: str = None):
+    """Force reload the graph from the GraphML file for a specific workspace or all workspaces"""
     try:
-        working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
-        graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+        reload_results = {}
         
-        if os.path.exists(graphml_path):
-            # Load the graph from file
-            loaded_graph = nx.read_graphml(graphml_path)
-            node_count = loaded_graph.number_of_nodes()
-            edge_count = loaded_graph.number_of_edges()
-            
-            # Replace the in-memory graph
-            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph_storage = rag_instance.chunk_entity_relation_graph
-                
-                # Update the graph in the storage object
-                if hasattr(graph_storage, '_graph'):
-                    graph_storage._graph = loaded_graph
-                elif hasattr(graph_storage, 'graph'):
-                    graph_storage.graph = loaded_graph
-                elif hasattr(graph_storage, 'set_graph'):
-                    graph_storage.set_graph(loaded_graph)
-                else:
-                    # If storage doesn't have a way to set the graph, replace the whole object
-                    rag_instance.chunk_entity_relation_graph = loaded_graph
-                
-                # Also update the graph storage's reference if it has one
-                if hasattr(rag_instance, 'graph_storage'):
-                    if hasattr(rag_instance.graph_storage, '_graph'):
-                        rag_instance.graph_storage._graph = loaded_graph
-                    elif hasattr(rag_instance.graph_storage, 'graph'):
-                        rag_instance.graph_storage.graph = loaded_graph
-                
-                return {
-                    "status": "success",
-                    "message": f"Graph reloaded from {graphml_path}",
-                    "nodes": node_count,
-                    "edges": edge_count
-                }
+        # Determine which workspaces to reload
+        workspaces_to_reload = []
+        if workspace:
+            if workspace in workspace_instances:
+                workspaces_to_reload = [workspace]
             else:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Could not find graph reference in RAG instance"
-                )
+                return {"error": f"Workspace '{workspace}' not found"}
         else:
-            return {
-                "status": "warning",
-                "message": f"GraphML file not found at {graphml_path}",
-                "nodes": 0,
-                "edges": 0
-            }
+            workspaces_to_reload = list(workspace_instances.keys())
+        
+        # Reload each workspace
+        for ws_name in workspaces_to_reload:
+            rag = workspace_instances[ws_name]
+            working_dir = rag.working_dir if hasattr(rag, 'working_dir') else os.path.join(os.getenv("WORKING_DIR", "/app/data/rag_storage"), "workspaces", ws_name)
+            graphml_path = os.path.join(working_dir, "graph_chunk_entity_relation.graphml")
+            
+            if os.path.exists(graphml_path):
+                try:
+                    # Load the graph from file
+                    loaded_graph = nx.read_graphml(graphml_path)
+                    node_count = loaded_graph.number_of_nodes()
+                    edge_count = loaded_graph.number_of_edges()
+                    
+                    # Replace the in-memory graph
+                    if hasattr(rag, 'chunk_entity_relation_graph'):
+                        graph_storage = rag.chunk_entity_relation_graph
+                        
+                        # Update the graph in the storage object
+                        if hasattr(graph_storage, '_graph'):
+                            graph_storage._graph = loaded_graph
+                            # Mark as not needing update
+                            if hasattr(graph_storage, 'storage_updated') and graph_storage.storage_updated:
+                                graph_storage.storage_updated.value = False
+                        elif hasattr(graph_storage, 'graph'):
+                            graph_storage.graph = loaded_graph
+                        else:
+                            # If storage doesn't have a way to set the graph, log warning
+                            reload_results[ws_name] = {
+                                "status": "error",
+                                "message": "Could not update graph in storage object"
+                            }
+                            continue
+                        
+                        reload_results[ws_name] = {
+                            "status": "success",
+                            "message": f"Graph reloaded from {graphml_path}",
+                            "nodes": node_count,
+                            "edges": edge_count
+                        }
+                    else:
+                        reload_results[ws_name] = {
+                            "status": "error",
+                            "message": "Could not find graph reference in RAG instance"
+                        }
+                except Exception as e:
+                    reload_results[ws_name] = {
+                        "status": "error",
+                        "message": f"Error loading GraphML: {str(e)}"
+                    }
+            else:
+                reload_results[ws_name] = {
+                    "status": "warning",
+                    "message": f"GraphML file not found at {graphml_path}"
+                }
+        
+        return reload_results
             
     except Exception as e:
         print(f"Error reloading graph: {e}")
@@ -2014,17 +2105,28 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                                     
                                     # Call index_done_callback to persist the graph
                                     if hasattr(graph_storage, 'index_done_callback'):
-                                        await graph_storage.index_done_callback()
-                                        print(f"Called index_done_callback on graph storage")
+                                        result = await graph_storage.index_done_callback()
+                                        print(f"Called index_done_callback on graph storage, result: {result}")
                                     
-                                    # Also try to get and save the graph directly
+                                    # Always try to get and save the graph directly as backup
                                     graph = await get_graph_from_storage(graph_storage)
                                     if graph and hasattr(graph, 'number_of_nodes'):
                                         graphml_path = os.path.join(rag.working_dir, "graph_chunk_entity_relation.graphml")
                                         nx.write_graphml(graph, graphml_path)
-                                        print(f"Saved graph with {graph.number_of_nodes()} nodes to {graphml_path}")
+                                        print(f"Directly saved graph with {graph.number_of_nodes()} nodes to {graphml_path}")
+                                        
+                                        # Verify the file was written
+                                        if os.path.exists(graphml_path):
+                                            file_size = os.path.getsize(graphml_path)
+                                            print(f"Graph file saved successfully, size: {file_size} bytes")
+                                        else:
+                                            print(f"ERROR: Graph file was not created at {graphml_path}")
+                                    else:
+                                        print(f"WARNING: Graph is empty or invalid")
                             except Exception as e:
-                                print(f"Warning: Could not save graph to disk: {e}")
+                                print(f"ERROR saving graph to disk: {e}")
+                                import traceback
+                                traceback.print_exc()
                             
                             return {
                                 "status": "success",
@@ -2119,17 +2221,28 @@ async def insert_text(request: TextInsertRequest):
                                     
                                     # Call index_done_callback to persist the graph
                                     if hasattr(graph_storage, 'index_done_callback'):
-                                        await graph_storage.index_done_callback()
-                                        print(f"Called index_done_callback on graph storage")
+                                        result = await graph_storage.index_done_callback()
+                                        print(f"Called index_done_callback on graph storage, result: {result}")
                                     
-                                    # Also try to get and save the graph directly
+                                    # Always try to get and save the graph directly as backup
                                     graph = await get_graph_from_storage(graph_storage)
                                     if graph and hasattr(graph, 'number_of_nodes'):
                                         graphml_path = os.path.join(rag.working_dir, "graph_chunk_entity_relation.graphml")
                                         nx.write_graphml(graph, graphml_path)
-                                        print(f"Saved graph with {graph.number_of_nodes()} nodes to {graphml_path}")
+                                        print(f"Directly saved graph with {graph.number_of_nodes()} nodes to {graphml_path}")
+                                        
+                                        # Verify the file was written
+                                        if os.path.exists(graphml_path):
+                                            file_size = os.path.getsize(graphml_path)
+                                            print(f"Graph file saved successfully, size: {file_size} bytes")
+                                        else:
+                                            print(f"ERROR: Graph file was not created at {graphml_path}")
+                                    else:
+                                        print(f"WARNING: Graph is empty or invalid")
                             except Exception as e:
-                                print(f"Warning: Could not save graph to disk: {e}")
+                                print(f"ERROR saving graph to disk: {e}")
+                                import traceback
+                                traceback.print_exc()
                             
                             return {
                                 "status": "success",
