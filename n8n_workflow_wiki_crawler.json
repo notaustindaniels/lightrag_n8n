@@ -19,7 +19,7 @@
             {
               "id": "wiki-url",
               "name": "wikiUrl",
-              "value": "https://afterinc.wiki.gg",
+              "value": "https://rebelinc.wiki.gg",
               "type": "string"
             }
           ]
@@ -156,7 +156,7 @@
     },
     {
       "parameters": {
-        "functionCode": "// Prepare document for LightRAG\nconst pageData = $('Check Content').item.json;\nconst markdown = $input.item.json.markdown || '';\n\n// Generate document ID\nfunction generateDocumentId(title, wikiUrl) {\n  try {\n    const urlObj = new URL(wikiUrl);\n    const domain = urlObj.hostname;\n    return `[${domain}] ${title}`;\n  } catch (error) {\n    return `[After Inc] ${title}`;\n  }\n}\n\nconst documentId = generateDocumentId(pageData.title, pageData.wikiUrl);\n\nconst document = {\n  text: markdown,\n  description: `RebelInc Wiki - ${pageData.title}`,\n  source_url: pageData.pageUrl,\n  sitemap_url: pageData.wikiUrl,\n  doc_index: pageData.index,\n  total_docs: pageData.total,\n  document_id: documentId\n};\n\nconsole.log(`Prepared document ${document.doc_index}/${document.total_docs}: ${pageData.title}`);\n\nreturn document;"
+        "functionCode": "// Prepare document for LightRAG\nconst pageData = $('Check Content').item.json;\nconst markdown = $input.item.json.markdown || '';\n\n// Generate document ID\nfunction generateDocumentId(title, wikiUrl) {\n  try {\n    const urlObj = new URL(wikiUrl);\n    const domain = urlObj.hostname;\n    return `[${domain}] ${title}`;\n  } catch (error) {\n    return `[Rebel Inc] ${title}`;\n  }\n}\n\nconst documentId = generateDocumentId(pageData.title, pageData.wikiUrl);\n\nconst document = {\n  text: markdown,\n  description: `RebelInc Wiki - ${pageData.title}`,\n  source_url: pageData.pageUrl,\n  sitemap_url: pageData.wikiUrl,\n  doc_index: pageData.index,\n  total_docs: pageData.total,\n  document_id: documentId\n};\n\nconsole.log(`Prepared document ${document.doc_index}/${document.total_docs}: ${pageData.title}`);\n\nreturn document;"
       },
       "id": "97935bc6-daf6-4df1-8996-41f336f6ec76",
       "name": "Prepare Document",
@@ -435,7 +435,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "425e41be-1380-46b8-87c6-94b3deaf271d",
+  "versionId": "5dd6ae6e-150a-4651-9403-583082174f48",
   "meta": {
     "instanceId": "b4a5a34f61263b5bccef2bb1faf90b6e128bf65feaf809251e6e85bf0bdd5d8b"
   },

@@ -280,6 +280,13 @@ def load_workspace_metadata(workspace: str):
         print(f"Error loading metadata for workspace {workspace}: {e}")
         workspace_metadata[workspace] = {}
 
+def get_all_documents_metadata():
+    """Get aggregated metadata from all workspaces for backward compatibility"""
+    all_metadata = {}
+    for workspace, metadata in workspace_metadata.items():
+        all_metadata.update(metadata)
+    return all_metadata
+
 def extract_text_from_file(file_content: bytes, file_extension: str, filename: str) -> str:
     """Extract text from various file formats"""
     try:
@@ -1862,13 +1869,16 @@ async def insert_text(request: TextInsertRequest):
 
 @app.get("/documents")
 async def get_documents():
-    """Get all documents with proper file_path handling"""
+    """Get all documents from all workspaces for WebUI compatibility"""
     try:
         documents = []
         
+        # Get aggregated metadata from all workspaces
+        all_metadata = get_all_documents_metadata()
+        
         # Debug logging
         print("\n=== Getting documents for WebUI ===")
-        print(f"Number of documents in metadata store: {len(metadata_store)}")
+        print(f"Total documents across all workspaces: {len(all_metadata)}")
         
         # Try to get documents from LightRAG's doc_status storage
         if hasattr(rag_instance, 'doc_status') and rag_instance.doc_status is not None:
@@ -1886,7 +1896,7 @@ async def get_documents():
                                 # This could be either our custom ID or a hash ID
                                 
                                 # Try to get metadata using the doc_id first
-                                metadata = metadata_store.get(doc_id, {})
+                                metadata = all_metadata.get(doc_id, {})
                                 
                                 # If no metadata found and doc_id looks like a custom ID, it might be stored differently
                                 if not metadata and doc_id.startswith('[') and ']' in doc_id:
@@ -1902,7 +1912,7 @@ async def get_documents():
                                 # If still no metadata, check if this is a hash ID and search for metadata by content
                                 if not metadata and doc_id.startswith('doc-'):
                                     # Search through metadata store for entries with this original_doc_id
-                                    for key, meta in metadata_store.items():
+                                    for key, meta in all_metadata.items():
                                         if meta.get('original_doc_id') == doc_id:
                                             metadata = meta
                                             break
@@ -1956,7 +1966,7 @@ async def get_documents():
                         if isinstance(storage_data, dict):
                             for doc_id, doc_data in storage_data.items():
                                 # Get metadata from our store
-                                metadata = metadata_store.get(doc_id, {})
+                                metadata = all_metadata.get(doc_id, {})
                                 
                                 # Ensure file_path exists
                                 file_path = metadata.get('file_path', f"text/{doc_id}.txt")
@@ -1990,7 +2000,7 @@ async def get_documents():
                                 doc_status_data = json.load(f)
                                 for doc_id, doc_data in doc_status_data.items():
                                     # Get metadata from our store
-                                    metadata = metadata_store.get(doc_id, {})
+                                    metadata = all_metadata.get(doc_id, {})
                                     
                                     # Ensure file_path exists
                                     file_path = metadata.get('file_path', f"text/{doc_id}.txt")
@@ -2014,9 +2024,9 @@ async def get_documents():
             except Exception as e:
                 print(f"Error accessing doc_status storage: {e}")
         
-        # If no documents found in doc_status, use metadata store
+        # If no documents found in doc_status, use metadata
         if not documents:
-            for doc_id, metadata in metadata_store.items():
+            for doc_id, metadata in all_metadata.items():
                 file_path = metadata.get('file_path', f"text/{doc_id}.txt")
                 display_name = metadata.get('display_name')
                 
@@ -2072,7 +2082,10 @@ async def get_documents_by_sitemap(sitemap_url: str):
     try:
         matching_docs = []
         
-        for doc_id, metadata in metadata_store.items():
+        # Get aggregated metadata from all workspaces
+        all_metadata = get_all_documents_metadata()
+        
+        for doc_id, metadata in all_metadata.items():
             # Check both sitemap_url and sitemap_identifier (for legacy support)
             if (metadata.get('sitemap_url') == sitemap_url or 
                 metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
@@ -2141,61 +2154,72 @@ async def delete_documents_by_id(request: DeleteByIdRequest):
 
 @app.delete("/documents/by-sitemap/{sitemap_url:path}")
 async def delete_documents_by_sitemap(sitemap_url: str):
-    """Delete all documents for a specific sitemap URL"""
+    """Delete all documents for a specific sitemap URL from all workspaces"""
     try:
-        # Find all documents with this sitemap URL
-        docs_to_delete = []
-        metadata_keys_to_delete = []
+        # Track deletions by workspace
+        workspace_keys_to_delete = {}
+        total_deleted = 0
         
-        for doc_id, metadata in metadata_store.items():
-            # Check both sitemap_identifier (legacy) and sitemap_url
-            if (metadata.get('sitemap_url') == sitemap_url or 
-                metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
-                # The doc_id in metadata_store is the key, but LightRAG might be using custom_id
-                # Check if this document was inserted with a custom ID
-                metadata_keys_to_delete.append(doc_id)
+        # Check all workspaces for documents with this sitemap URL
+        for workspace_name, workspace_meta in workspace_metadata.items():
+            docs_to_delete = []
+            metadata_keys_to_delete = []
+            
+            for doc_id, metadata in workspace_meta.items():
+                # Check both sitemap_identifier (legacy) and sitemap_url
+                if (metadata.get('sitemap_url') == sitemap_url or 
+                    metadata.get('sitemap_identifier') == f"[SITEMAP: {sitemap_url}]"):
+                    # The doc_id in metadata_store is the key, but LightRAG might be using custom_id
+                    # Check if this document was inserted with a custom ID
+                    metadata_keys_to_delete.append(doc_id)
+                    
+                    # For LightRAG deletion, we need to use the actual ID that LightRAG is using
+                    # This could be the doc_id itself (if it's a custom ID like [domain] path)
+                    # or it could be in the metadata
+                    if doc_id.startswith('[') and ']' in doc_id:
+                        # This is likely the custom ID used by LightRAG
+                        docs_to_delete.append(doc_id)
+                    else:
+                        # Check if there's an original_doc_id that might be the hash ID
+                        original_id = metadata.get('original_doc_id', doc_id)
+                        docs_to_delete.append(original_id)
+                        # Also try the file_path as it might be the custom ID
+                        file_path = metadata.get('file_path')
+                        if file_path and file_path != original_id:
+                            docs_to_delete.append(file_path)
+            
+            # Store metadata keys to delete for this workspace
+            if metadata_keys_to_delete:
+                workspace_keys_to_delete[workspace_name] = metadata_keys_to_delete
                 
-                # For LightRAG deletion, we need to use the actual ID that LightRAG is using
-                # This could be the doc_id itself (if it's a custom ID like [domain] path)
-                # or it could be in the metadata
-                if doc_id.startswith('[') and ']' in doc_id:
-                    # This is likely the custom ID used by LightRAG
-                    docs_to_delete.append(doc_id)
-                else:
-                    # Check if there's an original_doc_id that might be the hash ID
-                    original_id = metadata.get('original_doc_id', doc_id)
-                    docs_to_delete.append(original_id)
-                    # Also try the file_path as it might be the custom ID
-                    file_path = metadata.get('file_path')
-                    if file_path and file_path != original_id:
-                        docs_to_delete.append(file_path)
-        
-        if docs_to_delete:
-            # Remove duplicates from docs_to_delete
-            unique_docs_to_delete = list(set(docs_to_delete))
+                # Remove duplicates from docs_to_delete
+                unique_docs_to_delete = list(set(docs_to_delete))
+                
+                if unique_docs_to_delete:
+                    print(f"Deleting documents for sitemap {sitemap_url} in workspace {workspace_name}")
+                    print(f"Document IDs to delete: {unique_docs_to_delete}")
+                    
+                    # Get the workspace RAG instance
+                    rag = await WorkspaceManager.get_or_create_instance(workspace_name)
+                    
+                    # First clean up all document traces from LightRAG storages
+                    await cleanup_all_document_traces(unique_docs_to_delete)
+                    
+                    # Then call the standard delete method
+                    try:
+                        await rag.adelete_by_doc_id(unique_docs_to_delete)
+                    except Exception as e:
+                        print(f"Error in adelete_by_doc_id: {e}")
+                        # Continue even if this fails, as cleanup_all_document_traces should have done most of the work
             
-            print(f"Deleting documents for sitemap {sitemap_url}")
-            print(f"Document IDs to delete from LightRAG: {unique_docs_to_delete}")
-            print(f"Metadata keys to delete: {metadata_keys_to_delete}")
-            
-            # First clean up all document traces from LightRAG storages
-            # This will also clear and save the graph properly
-            await cleanup_all_document_traces(unique_docs_to_delete)
-            
-            # Then call the standard delete method
-            try:
-                await rag_instance.adelete_by_doc_id(unique_docs_to_delete)
-            except Exception as e:
-                print(f"Error in adelete_by_doc_id: {e}")
-                # Continue even if this fails, as cleanup_all_document_traces should have done most of the work
-            
-            # Remove from metadata store using the correct keys
-            for key in metadata_keys_to_delete:
-                if key in metadata_store:
-                    del metadata_store[key]
-            
-            # Save updated metadata
-            save_metadata_store()
+            # Remove from workspace metadata using the correct keys
+            for workspace_name, keys in workspace_keys_to_delete.items():
+                if workspace_name in workspace_metadata:
+                    for key in keys:
+                        if key in workspace_metadata[workspace_name]:
+                            del workspace_metadata[workspace_name][key]
+                    # Save workspace metadata
+                    save_workspace_metadata(workspace_name)
             
             # Force a final save of the graph to ensure persistence
             working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
