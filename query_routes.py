@@ -64,10 +64,13 @@ def get_helper_functions():
     }
 
 @router.get("/documents/sources")
-async def list_document_sources():
+async def list_document_sources(workspace: Optional[str] = None):
     """
     List all available documentation sources/libraries (workspaces)
     Each source now represents a separate workspace with isolated data
+    
+    Args:
+        workspace: Optional workspace name to filter sources from
     """
     try:
         workspace_instances, WorkspaceManager = get_workspace_instances()
@@ -75,12 +78,20 @@ async def list_document_sources():
         
         sources_map = {}
         
-        # List all workspaces as sources
-        for workspace_name in WorkspaceManager.list_workspaces():
+        # If workspace specified, only list that workspace
+        workspaces_to_list = [workspace] if workspace else WorkspaceManager.list_workspaces()
+        
+        # List workspaces as sources
+        for workspace_name in workspaces_to_list:
+            # Skip if workspace doesn't exist when filtered
+            if workspace and workspace_name not in WorkspaceManager.list_workspaces():
+                continue
+                
             metadata = workspace_metadata.get(workspace_name, {})
             
             sources_map[workspace_name] = {
                 "source": workspace_name,
+                "workspace": workspace_name,  # Explicit workspace field
                 "document_count": len(metadata),
                 "example_files": [],
                 "description": f"Workspace: {workspace_name}",

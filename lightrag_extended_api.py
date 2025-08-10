@@ -81,6 +81,7 @@ class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
     stream: bool = False
+    workspace: Optional[str] = None  # Optional workspace to query from
 
 # Graph models
 class EntityUpdateRequest(BaseModel):
@@ -1400,20 +1401,30 @@ async def get_knowledge_graph(
         
         print(f"Returning {len(nodes_to_include)} nodes and {len(edges_to_include)} edges")
         
-        # Build response format
+        # Build response format matching original LightRAG structure
         node_list = []
         for node in nodes_to_include:
-            node_data = {"id": node, "label": node}
+            # Create node in the format expected by WebUI
+            # WebUI expects: {id: str, labels: [str], properties: {...}}
+            node_properties = {}
+            
             # Try to get additional node data
             if hasattr(graph, 'nodes') and hasattr(graph.nodes, '__getitem__'):
                 try:
                     node_attrs = graph.nodes[node]
-                    # Filter out non-serializable attributes
+                    # Put all attributes in properties, filtering non-serializable
                     for key, value in node_attrs.items():
                         if isinstance(value, (str, int, float, bool, list, dict)):
-                            node_data[key] = value
+                            node_properties[key] = value
                 except:
                     pass
+            
+            # Build node with correct structure for WebUI
+            node_data = {
+                "id": str(node),
+                "labels": [str(node)],  # WebUI expects labels as array
+                "properties": node_properties  # All other data goes in properties
+            }
             node_list.append(node_data)
         
         return {
@@ -3157,23 +3168,30 @@ async def upload_documents_bulk(
 
 @app.post("/query")
 async def query_documents(request: QueryRequest):
-    """Query across all workspaces using LightRAG
+    """Query documents using LightRAG with optional workspace specification
     
     Args:
-        request: Query request with query string and mode
+        request: Query request with query string, mode, and optional workspace
     
     Returns:
         Query response from LightRAG
     """
     try:
-        # Use default workspace or first available workspace
-        if default_workspace in workspace_instances:
-            rag = workspace_instances[default_workspace]
-        elif workspace_instances:
-            rag = list(workspace_instances.values())[0]
+        # Use specified workspace, or default if not provided
+        if request.workspace:
+            # Get or create the specified workspace
+            rag = await WorkspaceManager.get_or_create_instance(request.workspace)
+            print(f"Querying workspace: {request.workspace}")
         else:
-            # Create default instance if none exists
-            rag = await WorkspaceManager.get_or_create_instance(default_workspace)
+            # Use default workspace or first available workspace
+            if default_workspace in workspace_instances:
+                rag = workspace_instances[default_workspace]
+            elif workspace_instances:
+                rag = list(workspace_instances.values())[0]
+            else:
+                # Create default instance if none exists
+                rag = await WorkspaceManager.get_or_create_instance(default_workspace)
+            print(f"Querying default workspace: {default_workspace}")
         
         # Create query parameters
         query_param = QueryParam(
@@ -3187,7 +3205,8 @@ async def query_documents(request: QueryRequest):
         return {
             "status": "success",
             "response": result,
-            "mode": request.mode
+            "mode": request.mode,
+            "workspace": request.workspace or default_workspace
         }
         
     except Exception as e:
@@ -3197,10 +3216,10 @@ async def query_documents(request: QueryRequest):
 
 @app.post("/query/stream")
 async def query_documents_stream(request: QueryRequest):
-    """Stream query results from LightRAG
+    """Stream query results from LightRAG with optional workspace specification
     
     Args:
-        request: Query request with query string and mode
+        request: Query request with query string, mode, and optional workspace
     
     Returns:
         Streaming response from LightRAG
@@ -3210,14 +3229,21 @@ async def query_documents_stream(request: QueryRequest):
     
     async def generate():
         try:
-            # Use default workspace or first available workspace
-            if default_workspace in workspace_instances:
-                rag = workspace_instances[default_workspace]
-            elif workspace_instances:
-                rag = list(workspace_instances.values())[0]
+            # Use specified workspace, or default if not provided
+            if request.workspace:
+                # Get or create the specified workspace
+                rag = await WorkspaceManager.get_or_create_instance(request.workspace)
+                print(f"Streaming query from workspace: {request.workspace}")
             else:
-                # Create default instance if none exists
-                rag = await WorkspaceManager.get_or_create_instance(default_workspace)
+                # Use default workspace or first available workspace
+                if default_workspace in workspace_instances:
+                    rag = workspace_instances[default_workspace]
+                elif workspace_instances:
+                    rag = list(workspace_instances.values())[0]
+                else:
+                    # Create default instance if none exists
+                    rag = await WorkspaceManager.get_or_create_instance(default_workspace)
+                print(f"Streaming query from default workspace: {default_workspace}")
             
             # Create query parameters with streaming
             query_param = QueryParam(
@@ -3228,7 +3254,7 @@ async def query_documents_stream(request: QueryRequest):
             # Execute streaming query
             async for chunk in rag.aquery(request.query, param=query_param):
                 # Format as server-sent event
-                data = json.dumps({"content": chunk})
+                data = json.dumps({"content": chunk, "workspace": request.workspace or default_workspace})
                 yield f"data: {data}\n\n"
                 
         except Exception as e:
