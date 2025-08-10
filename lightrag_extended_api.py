@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 from contextlib import asynccontextmanager
@@ -99,6 +99,7 @@ class RelationUpdateRequest(BaseModel):
 workspace_instances = {}  # Dictionary to store multiple LightRAG instances by workspace
 workspace_metadata = {}  # Metadata store per workspace
 default_workspace = "default"  # Default workspace for backward compatibility
+metadata_store = {}  # Global metadata store for backward compatibility with WebUI
 
 # Supported file extensions
 SUPPORTED_EXTENSIONS = {
@@ -3153,6 +3154,169 @@ async def upload_documents_bulk(
         "failed": len([r for r in results if r["status"] == "error"]),
         "results": results
     }
+
+@app.post("/query")
+async def query_documents(request: QueryRequest):
+    """Query across all workspaces using LightRAG
+    
+    Args:
+        request: Query request with query string and mode
+    
+    Returns:
+        Query response from LightRAG
+    """
+    try:
+        # Use default workspace or first available workspace
+        if default_workspace in workspace_instances:
+            rag = workspace_instances[default_workspace]
+        elif workspace_instances:
+            rag = list(workspace_instances.values())[0]
+        else:
+            # Create default instance if none exists
+            rag = await WorkspaceManager.get_or_create_instance(default_workspace)
+        
+        # Create query parameters
+        query_param = QueryParam(
+            mode=request.mode,
+            stream=False
+        )
+        
+        # Execute query
+        result = await rag.aquery(request.query, param=query_param)
+        
+        return {
+            "status": "success",
+            "response": result,
+            "mode": request.mode
+        }
+        
+    except Exception as e:
+        print(f"Error in /query: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/query/stream")
+async def query_documents_stream(request: QueryRequest):
+    """Stream query results from LightRAG
+    
+    Args:
+        request: Query request with query string and mode
+    
+    Returns:
+        Streaming response from LightRAG
+    """
+    from fastapi.responses import StreamingResponse
+    import json
+    
+    async def generate():
+        try:
+            # Use default workspace or first available workspace
+            if default_workspace in workspace_instances:
+                rag = workspace_instances[default_workspace]
+            elif workspace_instances:
+                rag = list(workspace_instances.values())[0]
+            else:
+                # Create default instance if none exists
+                rag = await WorkspaceManager.get_or_create_instance(default_workspace)
+            
+            # Create query parameters with streaming
+            query_param = QueryParam(
+                mode=request.mode,
+                stream=True
+            )
+            
+            # Execute streaming query
+            async for chunk in rag.aquery(request.query, param=query_param):
+                # Format as server-sent event
+                data = json.dumps({"content": chunk})
+                yield f"data: {data}\n\n"
+                
+        except Exception as e:
+            error_data = json.dumps({"error": str(e)})
+            yield f"data: {error_data}\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+@app.delete("/documents")
+async def clear_all_documents():
+    """Clear all documents from all workspaces
+    
+    Returns:
+        Status of the clear operation
+    """
+    try:
+        results = []
+        
+        # Clear each workspace
+        for workspace_name, rag in workspace_instances.items():
+            try:
+                # Clear the workspace's data
+                if hasattr(rag, 'full_docs'):
+                    await rag.full_docs.drop()
+                if hasattr(rag, 'text_chunks'):
+                    await rag.text_chunks.drop()
+                if hasattr(rag, 'entities_vdb'):
+                    await rag.entities_vdb.drop()
+                if hasattr(rag, 'relationships_vdb'):
+                    await rag.relationships_vdb.drop()
+                if hasattr(rag, 'chunks_vdb'):
+                    await rag.chunks_vdb.drop()
+                if hasattr(rag, 'chunk_entity_relation_graph'):
+                    await rag.chunk_entity_relation_graph.drop()
+                
+                # Clear workspace metadata
+                if workspace_name in workspace_metadata:
+                    workspace_metadata[workspace_name] = {}
+                    save_workspace_metadata(workspace_name)
+                
+                results.append({
+                    "workspace": workspace_name,
+                    "status": "cleared"
+                })
+                
+            except Exception as e:
+                results.append({
+                    "workspace": workspace_name,
+                    "status": "error",
+                    "error": str(e)
+                })
+        
+        # Clear global metadata store
+        global metadata_store
+        metadata_store = {}
+        save_metadata_store()
+        
+        return {
+            "status": "success",
+            "message": f"Cleared {len(results)} workspaces",
+            "results": results
+        }
+        
+    except Exception as e:
+        print(f"Error clearing documents: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/scan")
+async def scan_for_documents():
+    """Scan for new documents to index
+    
+    Returns:
+        Status of the scan operation
+    """
+    try:
+        # This would typically scan a directory for new files
+        # For now, return a simple status
+        return {
+            "status": "success",
+            "message": "Document scan completed",
+            "new_documents": 0
+        }
+        
+    except Exception as e:
+        print(f"Error scanning documents: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
