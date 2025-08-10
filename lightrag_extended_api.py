@@ -174,6 +174,9 @@ class WorkspaceManager:
         workspace_dir = os.path.join(base_dir, "workspaces", workspace)
         os.makedirs(workspace_dir, exist_ok=True)
         
+        print(f"\n=== Creating/Loading workspace: {workspace} ===")
+        print(f"Workspace directory: {workspace_dir}")
+        
         # Create LightRAG instance for this workspace
         rag = LightRAG(
             working_dir=workspace_dir,
@@ -189,6 +192,30 @@ class WorkspaceManager:
         await rag.initialize_storages()
         await initialize_pipeline_status()
         
+        # Check if graph exists and try to load it
+        graphml_path = os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml")
+        if os.path.exists(graphml_path):
+            try:
+                print(f"Found existing GraphML file: {graphml_path}")
+                # Try to load the graph into the rag instance
+                if hasattr(rag, 'chunk_entity_relation_graph'):
+                    loaded_graph = nx.read_graphml(graphml_path)
+                    print(f"Loaded graph with {loaded_graph.number_of_nodes()} nodes and {loaded_graph.number_of_edges()} edges")
+                    
+                    # Try to set the graph on the storage object
+                    if hasattr(rag.chunk_entity_relation_graph, '_graph'):
+                        rag.chunk_entity_relation_graph._graph = loaded_graph
+                    elif hasattr(rag.chunk_entity_relation_graph, 'graph'):
+                        rag.chunk_entity_relation_graph.graph = loaded_graph
+                    else:
+                        print(f"Warning: Could not set graph on storage object")
+                else:
+                    print(f"Warning: rag instance has no chunk_entity_relation_graph attribute")
+            except Exception as e:
+                print(f"Error loading GraphML file: {e}")
+        else:
+            print(f"No existing GraphML file found at {graphml_path}")
+        
         workspace_instances[workspace] = rag
         
         # Initialize metadata for this workspace
@@ -196,7 +223,7 @@ class WorkspaceManager:
             workspace_metadata[workspace] = {}
             load_workspace_metadata(workspace)
         
-        print(f"Created workspace: {workspace} at {workspace_dir}")
+        print(f"Workspace {workspace} ready")
         return rag
     
     @staticmethod
@@ -294,18 +321,67 @@ def get_combined_graph():
     """Combine graphs from all workspaces into a single graph"""
     combined_graph = nx.Graph()
     
-    print(f"DEBUG: Combining graphs from {len(workspace_instances)} workspaces: {list(workspace_instances.keys())}")
+    print(f"\n=== GRAPH AGGREGATION DEBUG ===")
+    print(f"Total workspaces loaded: {len(workspace_instances)}")
+    print(f"Workspace names: {list(workspace_instances.keys())}")
     
     for workspace_name, rag in workspace_instances.items():
-        print(f"DEBUG: Processing workspace '{workspace_name}'")
+        print(f"\n--- Processing workspace: '{workspace_name}' ---")
+        
+        # Try multiple ways to get the graph
+        workspace_graph = None
+        
+        # Method 1: Direct graph attribute access
         if hasattr(rag, 'chunk_entity_relation_graph'):
+            print(f"  Found chunk_entity_relation_graph attribute")
             graph_storage = rag.chunk_entity_relation_graph
+            print(f"  Graph storage type: {type(graph_storage)}")
+            
+            # Try to get the actual graph
             workspace_graph = get_graph_from_storage(graph_storage)
             
-            if workspace_graph and hasattr(workspace_graph, 'nodes'):
-                node_count = workspace_graph.number_of_nodes() if hasattr(workspace_graph, 'number_of_nodes') else 0
-                edge_count = workspace_graph.number_of_edges() if hasattr(workspace_graph, 'number_of_edges') else 0
-                print(f"DEBUG: Workspace '{workspace_name}' has {node_count} nodes and {edge_count} edges")
+            if workspace_graph:
+                print(f"  Successfully extracted graph from storage")
+            else:
+                print(f"  Failed to extract graph from storage")
+                
+                # Try loading from file as fallback
+                workspace_dir = os.path.join(os.getenv("WORKING_DIR", "/app/data/rag_storage"), "workspaces", workspace_name)
+                graphml_path = os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml")
+                
+                if os.path.exists(graphml_path):
+                    try:
+                        workspace_graph = nx.read_graphml(graphml_path)
+                        print(f"  Loaded graph from GraphML file: {graphml_path}")
+                    except Exception as e:
+                        print(f"  Error loading GraphML: {e}")
+        
+        # Method 2: Try loading directly from workspace directory
+        if not workspace_graph:
+            workspace_dir = os.path.join(os.getenv("WORKING_DIR", "/app/data/rag_storage"), "workspaces", workspace_name)
+            graphml_path = os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml")
+            
+            print(f"  Checking for GraphML at: {graphml_path}")
+            if os.path.exists(graphml_path):
+                try:
+                    workspace_graph = nx.read_graphml(graphml_path)
+                    print(f"  Successfully loaded graph from file")
+                except Exception as e:
+                    print(f"  Error loading GraphML file: {e}")
+            else:
+                print(f"  GraphML file does not exist")
+        
+        # Process the graph if we have one
+        if workspace_graph and hasattr(workspace_graph, 'nodes'):
+            try:
+                node_count = workspace_graph.number_of_nodes()
+                edge_count = workspace_graph.number_of_edges()
+                print(f"  Graph stats: {node_count} nodes, {edge_count} edges")
+                
+                # Show sample nodes for debugging
+                sample_nodes = list(workspace_graph.nodes())[:5]
+                if sample_nodes:
+                    print(f"  Sample nodes: {sample_nodes}")
                 
                 # Add nodes with workspace information
                 for node in workspace_graph.nodes(data=True):
@@ -323,14 +399,24 @@ def get_combined_graph():
                     # Add workspace info to edge data
                     edge_data['workspace'] = workspace_name
                     combined_graph.add_edge(source, target, **edge_data)
-            else:
-                print(f"DEBUG: Workspace '{workspace_name}' has no graph or nodes")
+                    
+                print(f"  Successfully added to combined graph")
+            except Exception as e:
+                print(f"  Error processing graph: {e}")
+                import traceback
+                traceback.print_exc()
         else:
-            print(f"DEBUG: Workspace '{workspace_name}' has no chunk_entity_relation_graph attribute")
+            print(f"  No valid graph found for workspace '{workspace_name}'")
     
-    total_nodes = combined_graph.number_of_nodes() if hasattr(combined_graph, 'number_of_nodes') else 0
-    total_edges = combined_graph.number_of_edges() if hasattr(combined_graph, 'number_of_edges') else 0
-    print(f"DEBUG: Combined graph has {total_nodes} nodes and {total_edges} edges")
+    total_nodes = combined_graph.number_of_nodes()
+    total_edges = combined_graph.number_of_edges()
+    print(f"\n=== FINAL COMBINED GRAPH ===")
+    print(f"Total nodes: {total_nodes}")
+    print(f"Total edges: {total_edges}")
+    
+    if total_nodes > 0:
+        sample_nodes = list(combined_graph.nodes())[:10]
+        print(f"Sample combined nodes: {sample_nodes}")
     
     return combined_graph
 
@@ -1111,91 +1197,118 @@ async def get_graph_labels():
 
 @app.get("/graphs")
 async def get_knowledge_graph(
-    label: str = Query(..., description="Label to get knowledge graph for"),
+    label: str = Query(None, description="Label to get knowledge graph for"),
     max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
     max_nodes: int = Query(1000, description="Maximum nodes to return", ge=1),
 ):
     """
     Retrieve a connected subgraph of nodes where the label includes the specified label.
+    If no label is provided, returns the entire graph (up to max_nodes).
     When reducing the number of nodes, the prioritization criteria are as follows:
     1. Hops(path) to the starting node take precedence
     2. Followed by the degree of the nodes
     
     Args:
-        label (str): Label of the starting node
+        label (str, optional): Label of the starting node. If None, returns entire graph
         max_depth (int, optional): Maximum depth of the subgraph, Defaults to 3
         max_nodes: Maximum nodes to return
     
     Returns:
-        Dict[str, List[str]]: Knowledge graph for label
+        Dict[str, List[str]]: Knowledge graph for label or entire graph
     """
     try:
-        # Try to get from all workspaces
-        for workspace_name, rag in workspace_instances.items():
-            if hasattr(rag, 'get_knowledge_graph'):
-                try:
-                    result = await rag.get_knowledge_graph(
-                        node_label=label,
-                        max_depth=max_depth,
-                        max_nodes=max_nodes,
-                    )
-                    # If we found data, return it
-                    if result and (result.get('nodes') or result.get('edges')):
-                        return result
-                except:
-                    pass
+        print(f"\n=== /graphs endpoint called ===")
+        print(f"Parameters: label={label}, max_depth={max_depth}, max_nodes={max_nodes}")
         
-        # If no direct method worked, use combined graph approach
+        # If label is provided, try workspace-specific methods first
+        if label:
+            for workspace_name, rag in workspace_instances.items():
+                if hasattr(rag, 'get_knowledge_graph'):
+                    try:
+                        result = await rag.get_knowledge_graph(
+                            node_label=label,
+                            max_depth=max_depth,
+                            max_nodes=max_nodes,
+                        )
+                        # If we found data, return it
+                        if result and (result.get('nodes') or result.get('edges')):
+                            print(f"Found graph data from workspace: {workspace_name}")
+                            return result
+                    except Exception as e:
+                        print(f"Error getting graph from workspace {workspace_name}: {e}")
+        
+        # Use combined graph approach
+        print("Using combined graph approach...")
         graph = get_combined_graph()
         
-        if graph is None:
+        if graph is None or graph.number_of_nodes() == 0:
+            print("No graph data available")
             return {"nodes": [], "edges": []}
         
-        # Get subgraph starting from the label
-        nodes = set()
-        edges = []
+        print(f"Combined graph has {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
         
-        # Simple BFS to get nodes within max_depth
-        if hasattr(graph, 'has_node') and graph.has_node(label):
-            visited = set()
-            queue = [(label, 0)]
-            
-            while queue and len(nodes) < max_nodes:
-                current_node, depth = queue.pop(0)
+        nodes_to_include = set()
+        edges_to_include = []
+        
+        if label:
+            # Get subgraph starting from the label
+            if hasattr(graph, 'has_node') and graph.has_node(label):
+                visited = set()
+                queue = [(label, 0)]
                 
-                if current_node in visited or depth > max_depth:
-                    continue
+                while queue and len(nodes_to_include) < max_nodes:
+                    current_node, depth = queue.pop(0)
                     
-                visited.add(current_node)
-                nodes.add(current_node)
-                
-                # Get neighbors
-                if hasattr(graph, 'neighbors'):
-                    for neighbor in graph.neighbors(current_node):
-                        if neighbor not in visited and depth + 1 <= max_depth:
-                            queue.append((neighbor, depth + 1))
-                            edges.append({"source": current_node, "target": neighbor})
+                    if current_node in visited or depth > max_depth:
+                        continue
+                        
+                    visited.add(current_node)
+                    nodes_to_include.add(current_node)
+                    
+                    # Get neighbors
+                    if hasattr(graph, 'neighbors'):
+                        for neighbor in graph.neighbors(current_node):
+                            if neighbor not in visited and depth + 1 <= max_depth:
+                                queue.append((neighbor, depth + 1))
+                                edges_to_include.append({"source": current_node, "target": neighbor})
+            else:
+                print(f"Label '{label}' not found in graph")
+        else:
+            # Return entire graph (up to max_nodes)
+            all_nodes = list(graph.nodes())
+            nodes_to_include = set(all_nodes[:max_nodes])
+            
+            # Include edges between the selected nodes
+            for edge in graph.edges():
+                source, target = edge
+                if source in nodes_to_include and target in nodes_to_include:
+                    edges_to_include.append({"source": source, "target": target})
+        
+        print(f"Returning {len(nodes_to_include)} nodes and {len(edges_to_include)} edges")
         
         # Build response format
         node_list = []
-        for node in nodes:
+        for node in nodes_to_include:
             node_data = {"id": node, "label": node}
             # Try to get additional node data
             if hasattr(graph, 'nodes') and hasattr(graph.nodes, '__getitem__'):
                 try:
                     node_attrs = graph.nodes[node]
-                    node_data.update(node_attrs)
+                    # Filter out non-serializable attributes
+                    for key, value in node_attrs.items():
+                        if isinstance(value, (str, int, float, bool, list, dict)):
+                            node_data[key] = value
                 except:
                     pass
             node_list.append(node_data)
         
         return {
             "nodes": node_list,
-            "edges": edges
+            "edges": edges_to_include
         }
             
     except Exception as e:
-        print(f"Error getting knowledge graph for label '{label}': {str(e)}")
+        print(f"Error in /graphs endpoint: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(
             status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
@@ -1880,6 +1993,18 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                             workspace_metadata[workspace][metadata_key] = metadata_entry
                             save_workspace_metadata(workspace)
                             
+                            # Force save graph to disk after successful processing
+                            try:
+                                if hasattr(rag, 'chunk_entity_relation_graph'):
+                                    graph_storage = rag.chunk_entity_relation_graph
+                                    graph = get_graph_from_storage(graph_storage)
+                                    if graph and hasattr(graph, 'number_of_nodes'):
+                                        graphml_path = os.path.join(rag.working_dir, "graph_chunk_entity_relation.graphml")
+                                        nx.write_graphml(graph, graphml_path)
+                                        print(f"Saved graph with {graph.number_of_nodes()} nodes to {graphml_path}")
+                            except Exception as e:
+                                print(f"Warning: Could not save graph to disk: {e}")
+                            
                             return {
                                 "status": "success",
                                 "message": "Document inserted and processed successfully",
@@ -1965,6 +2090,18 @@ async def insert_text(request: TextInsertRequest):
                                 workspace_metadata[workspace] = {}
                             workspace_metadata[workspace][doc_id] = metadata_entry
                             save_workspace_metadata(workspace)
+                            
+                            # Force save graph to disk after successful processing
+                            try:
+                                if hasattr(rag, 'chunk_entity_relation_graph'):
+                                    graph_storage = rag.chunk_entity_relation_graph
+                                    graph = get_graph_from_storage(graph_storage)
+                                    if graph and hasattr(graph, 'number_of_nodes'):
+                                        graphml_path = os.path.join(rag.working_dir, "graph_chunk_entity_relation.graphml")
+                                        nx.write_graphml(graph, graphml_path)
+                                        print(f"Saved graph with {graph.number_of_nodes()} nodes to {graphml_path}")
+                            except Exception as e:
+                                print(f"Warning: Could not save graph to disk: {e}")
                             
                             return {
                                 "status": "success",
