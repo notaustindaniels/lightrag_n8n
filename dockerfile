@@ -24,6 +24,7 @@ RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
 COPY lightrag_extended_api.py /app/
 COPY query_routes.py /app/
 COPY migrate_metadata.py /app/
+COPY startup_wrapper.py /app/
 COPY download_webui.sh /app/
 COPY build_webui.sh /app/
 
@@ -40,11 +41,11 @@ RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/webui
 ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 ENV HOST=0.0.0.0
-ENV PORT=9621
+ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 
 # Expose the port
-EXPOSE 9621
+EXPOSE 8080
 
-# Run the extended API server
-CMD ["python", "/app/lightrag_extended_api.py"]
+# Run the extended API server using startup wrapper
+CMD ["python", "/app/startup_wrapper.py"]
