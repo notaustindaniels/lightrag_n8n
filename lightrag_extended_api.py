@@ -193,10 +193,20 @@ class WorkspaceManager:
         await rag.initialize_storages()
         await initialize_pipeline_status()
         
-        # After initialization, the NetworkXStorage should have loaded the graph automatically
-        # Let's verify it was loaded correctly
-        graphml_path = os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml")
-        if os.path.exists(graphml_path):
+        # After initialization, check for graph in both flat and nested structures
+        graphml_paths = [
+            os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml"),
+            # Also check nested structure for backward compatibility
+            os.path.join(workspace_dir, workspace, "graph_chunk_entity_relation.graphml")
+        ]
+        
+        graphml_path = None
+        for path in graphml_paths:
+            if os.path.exists(path):
+                graphml_path = path
+                break
+        
+        if graphml_path:
             print(f"Found existing GraphML file: {graphml_path}")
             try:
                 # Check if the graph was loaded properly
@@ -206,20 +216,23 @@ class WorkspaceManager:
                     # Try to get the graph from storage to verify it's loaded
                     if hasattr(storage, '_get_graph'):
                         graph = await storage._get_graph()
-                        if graph is not None and hasattr(graph, 'number_of_nodes'):
+                        if graph is not None and hasattr(graph, 'number_of_nodes') and graph.number_of_nodes() > 0:
                             print(f"Graph loaded successfully with {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges")
                         else:
-                            print(f"Warning: Graph appears to be empty or not loaded")
-                            # Try manual loading as fallback
+                            print(f"Warning: Graph appears to be empty or not loaded properly")
+                            # Always try manual loading if the graph is empty
                             try:
                                 loaded_graph = nx.read_graphml(graphml_path)
                                 if loaded_graph.number_of_nodes() > 0:
-                                    print(f"Manually loading graph with {loaded_graph.number_of_nodes()} nodes")
+                                    print(f"Manually loading graph with {loaded_graph.number_of_nodes()} nodes from {graphml_path}")
                                     if hasattr(storage, '_graph'):
                                         storage._graph = loaded_graph
-                                        # Mark storage as updated
+                                        # Mark storage as not needing update
                                         if hasattr(storage, 'storage_updated') and storage.storage_updated:
                                             storage.storage_updated.value = False
+                                        print(f"Successfully set graph in storage")
+                                else:
+                                    print(f"GraphML file exists but has no nodes")
                             except Exception as e:
                                 print(f"Error during manual graph loading: {e}")
                     elif hasattr(storage, '_graph'):
@@ -228,12 +241,20 @@ class WorkspaceManager:
                             print(f"Graph accessible with {storage._graph.number_of_nodes()} nodes")
                         else:
                             print(f"Warning: Graph not properly loaded")
+                            # Try manual loading
+                            try:
+                                loaded_graph = nx.read_graphml(graphml_path)
+                                if loaded_graph.number_of_nodes() > 0:
+                                    storage._graph = loaded_graph
+                                    print(f"Manually set graph with {loaded_graph.number_of_nodes()} nodes")
+                            except Exception as e:
+                                print(f"Error setting graph: {e}")
             except Exception as e:
                 print(f"Error verifying graph load: {e}")
                 import traceback
                 traceback.print_exc()
         else:
-            print(f"No existing GraphML file found at {graphml_path}")
+            print(f"No existing GraphML file found in {workspace_dir} or nested structure")
         
         workspace_instances[workspace] = rag
         
@@ -378,17 +399,28 @@ async def get_combined_graph():
         # Method 2: Try loading directly from workspace directory
         if not workspace_graph:
             workspace_dir = os.path.join(os.getenv("WORKING_DIR", "/app/data/rag_storage"), "workspaces", workspace_name)
-            graphml_path = os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml")
             
-            print(f"  Checking for GraphML at: {graphml_path}")
-            if os.path.exists(graphml_path):
+            # Check both flat and nested structures
+            graphml_paths = [
+                os.path.join(workspace_dir, "graph_chunk_entity_relation.graphml"),
+                os.path.join(workspace_dir, workspace_name, "graph_chunk_entity_relation.graphml")  # Nested structure
+            ]
+            
+            graphml_path = None
+            for path in graphml_paths:
+                print(f"  Checking for GraphML at: {path}")
+                if os.path.exists(path):
+                    graphml_path = path
+                    break
+            
+            if graphml_path:
                 try:
                     workspace_graph = nx.read_graphml(graphml_path)
-                    print(f"  Successfully loaded graph from file")
+                    print(f"  Successfully loaded graph from file: {graphml_path}")
                 except Exception as e:
                     print(f"  Error loading GraphML file: {e}")
             else:
-                print(f"  GraphML file does not exist")
+                print(f"  No GraphML file found in flat or nested structure")
         
         # Process the graph if we have one
         if workspace_graph and hasattr(workspace_graph, 'nodes'):
@@ -1268,6 +1300,11 @@ async def get_knowledge_graph(
         print(f"\n=== /graphs endpoint called ===")
         print(f"Parameters: label={label}, max_depth={max_depth}, max_nodes={max_nodes}")
         
+        # Handle empty string as None
+        if label == "":
+            label = None
+            print("Empty label converted to None")
+        
         # If label is provided, try workspace-specific methods first
         if label:
             for workspace_name, rag in workspace_instances.items():
@@ -1951,6 +1988,108 @@ async def reload_graph(workspace: str = None):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/verify")
+async def verify_deployment():
+    """Comprehensive deployment verification endpoint"""
+    try:
+        verification = {
+            "status": "healthy",
+            "checks": {},
+            "warnings": [],
+            "errors": []
+        }
+        
+        # Check 1: Workspaces loaded
+        verification["checks"]["workspaces_loaded"] = {
+            "count": len(workspace_instances),
+            "names": list(workspace_instances.keys())
+        }
+        
+        # Check 2: Graph data availability
+        total_nodes = 0
+        total_edges = 0
+        graph_status = {}
+        
+        for ws_name, rag in workspace_instances.items():
+            if hasattr(rag, 'chunk_entity_relation_graph'):
+                try:
+                    graph = await get_graph_from_storage(rag.chunk_entity_relation_graph)
+                    if graph and hasattr(graph, 'number_of_nodes'):
+                        nodes = graph.number_of_nodes()
+                        edges = graph.number_of_edges()
+                        total_nodes += nodes
+                        total_edges += edges
+                        graph_status[ws_name] = {"nodes": nodes, "edges": edges, "status": "ok"}
+                    else:
+                        graph_status[ws_name] = {"nodes": 0, "edges": 0, "status": "empty"}
+                        verification["warnings"].append(f"Workspace '{ws_name}' has empty graph")
+                except Exception as e:
+                    graph_status[ws_name] = {"nodes": 0, "edges": 0, "status": "error", "error": str(e)}
+                    verification["errors"].append(f"Error loading graph for workspace '{ws_name}': {e}")
+            else:
+                graph_status[ws_name] = {"nodes": 0, "edges": 0, "status": "no_graph"}
+                verification["warnings"].append(f"Workspace '{ws_name}' has no graph storage")
+        
+        verification["checks"]["graph_data"] = {
+            "total_nodes": total_nodes,
+            "total_edges": total_edges,
+            "by_workspace": graph_status
+        }
+        
+        # Check 3: File system structure
+        base_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
+        nested_workspaces = []
+        
+        workspaces_dir = os.path.join(base_dir, "workspaces")
+        if os.path.exists(workspaces_dir):
+            for ws_name in os.listdir(workspaces_dir):
+                ws_path = os.path.join(workspaces_dir, ws_name)
+                if os.path.isdir(ws_path):
+                    nested_path = os.path.join(ws_path, ws_name)
+                    if os.path.exists(nested_path) and os.path.isdir(nested_path):
+                        nested_workspaces.append(ws_name)
+        
+        verification["checks"]["file_structure"] = {
+            "base_dir": base_dir,
+            "nested_workspaces": nested_workspaces
+        }
+        
+        if nested_workspaces:
+            verification["warnings"].append(f"Found nested workspace directories: {nested_workspaces}. Run migration script.")
+        
+        # Check 4: API endpoints
+        verification["checks"]["api_endpoints"] = {
+            "graphs": "/graphs endpoint available",
+            "documents": "/documents endpoint available",
+            "debug": "/graph/debug endpoint available",
+            "health": "/health endpoint available"
+        }
+        
+        # Check 5: WebUI availability
+        webui_path = "./webui" if os.path.exists("./webui") else None
+        verification["checks"]["webui"] = {
+            "available": webui_path is not None,
+            "path": webui_path
+        }
+        
+        # Determine overall status
+        if verification["errors"]:
+            verification["status"] = "unhealthy"
+        elif verification["warnings"]:
+            verification["status"] = "degraded"
+        
+        return verification
+        
+    except Exception as e:
+        print(f"Error in verification endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 @app.post("/documents/text/enhanced")
 async def insert_text_enhanced(request: EnhancedTextInsertRequest):
