@@ -287,6 +287,54 @@ def get_all_documents_metadata():
         all_metadata.update(metadata)
     return all_metadata
 
+def get_combined_graph():
+    """Combine graphs from all workspaces into a single graph"""
+    combined_graph = nx.Graph()
+    
+    for workspace_name, rag in workspace_instances.items():
+        if hasattr(rag, 'chunk_entity_relation_graph'):
+            graph_storage = rag.chunk_entity_relation_graph
+            workspace_graph = get_graph_from_storage(graph_storage)
+            
+            if workspace_graph and hasattr(workspace_graph, 'nodes'):
+                # Add nodes with workspace information
+                for node in workspace_graph.nodes(data=True):
+                    node_id = node[0]
+                    node_data = node[1] if len(node) > 1 else {}
+                    # Add workspace info to node data
+                    node_data['workspace'] = workspace_name
+                    combined_graph.add_node(node_id, **node_data)
+                
+                # Add edges
+                for edge in workspace_graph.edges(data=True):
+                    source = edge[0]
+                    target = edge[1]
+                    edge_data = edge[2] if len(edge) > 2 else {}
+                    # Add workspace info to edge data
+                    edge_data['workspace'] = workspace_name
+                    combined_graph.add_edge(source, target, **edge_data)
+    
+    return combined_graph
+
+async def get_all_graph_labels():
+    """Get all unique graph labels from all workspaces"""
+    all_labels = set()
+    
+    for workspace_name, rag in workspace_instances.items():
+        if hasattr(rag, 'get_graph_labels'):
+            try:
+                labels = await rag.get_graph_labels()
+                all_labels.update(labels)
+            except:
+                pass
+        elif hasattr(rag, 'chunk_entity_relation_graph'):
+            graph_storage = rag.chunk_entity_relation_graph
+            graph = get_graph_from_storage(graph_storage)
+            if graph and hasattr(graph, 'nodes'):
+                all_labels.update(graph.nodes())
+    
+    return list(all_labels)
+
 def extract_text_from_file(file_content: bytes, file_extension: str, filename: str) -> str:
     """Extract text from various file formats"""
     try:
@@ -965,27 +1013,14 @@ async def get_workspace_stats(workspace_name: str):
 @app.get("/graph/label/list")
 async def get_graph_labels():
     """
-    Get all graph labels
+    Get all graph labels from all workspaces
     Returns:
-        List[str]: List of graph labels
+        List[str]: List of all unique graph labels across workspaces
     """
     try:
-        # Check if rag_instance has the method
-        if hasattr(rag_instance, 'get_graph_labels'):
-            return await rag_instance.get_graph_labels()
-        else:
-            # Alternative approach: get labels from graph storage directly
-            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph_storage = rag_instance.chunk_entity_relation_graph
-                graph = get_graph_from_storage(graph_storage)
-                
-                if graph and hasattr(graph, 'nodes'):
-                    nodes = list(graph.nodes())
-                    return nodes
-                else:
-                    return []
-            else:
-                return []
+        # Get labels from all workspaces
+        all_labels = await get_all_graph_labels()
+        return all_labels
     except Exception as e:
         print(f"Error getting graph labels: {str(e)}")
         print(traceback.format_exc())
@@ -1014,67 +1049,69 @@ async def get_knowledge_graph(
         Dict[str, List[str]]: Knowledge graph for label
     """
     try:
-        # Check if rag_instance has the method
-        if hasattr(rag_instance, 'get_knowledge_graph'):
-            return await rag_instance.get_knowledge_graph(
-                node_label=label,
-                max_depth=max_depth,
-                max_nodes=max_nodes,
-            )
-        else:
-            # Alternative approach: build graph data from graph storage
-            if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-                graph_storage = rag_instance.chunk_entity_relation_graph
-                graph = get_graph_from_storage(graph_storage)
-                
-                if graph is None:
-                    return {"nodes": [], "edges": []}
-                
-                # Get subgraph starting from the label
-                nodes = set()
-                edges = []
-                
-                # Simple BFS to get nodes within max_depth
-                if hasattr(graph, 'has_node') and graph.has_node(label):
-                    visited = set()
-                    queue = [(label, 0)]
-                    
-                    while queue and len(nodes) < max_nodes:
-                        current_node, depth = queue.pop(0)
-                        
-                        if current_node in visited or depth > max_depth:
-                            continue
-                            
-                        visited.add(current_node)
-                        nodes.add(current_node)
-                        
-                        # Get neighbors
-                        if hasattr(graph, 'neighbors'):
-                            for neighbor in graph.neighbors(current_node):
-                                if neighbor not in visited and depth + 1 <= max_depth:
-                                    queue.append((neighbor, depth + 1))
-                                    edges.append({"source": current_node, "target": neighbor})
-                
-                # Build response format
-                node_list = []
-                for node in nodes:
-                    node_data = {"id": node, "label": node}
-                    # Try to get additional node data
-                    if hasattr(graph, 'nodes') and hasattr(graph.nodes, '__getitem__'):
-                        try:
-                            node_attrs = graph.nodes[node]
-                            node_data.update(node_attrs)
-                        except:
-                            pass
-                    node_list.append(node_data)
-                
-                return {
-                    "nodes": node_list,
-                    "edges": edges
-                }
-            
-            # If no graph storage available, return empty graph
+        # Try to get from all workspaces
+        for workspace_name, rag in workspace_instances.items():
+            if hasattr(rag, 'get_knowledge_graph'):
+                try:
+                    result = await rag.get_knowledge_graph(
+                        node_label=label,
+                        max_depth=max_depth,
+                        max_nodes=max_nodes,
+                    )
+                    # If we found data, return it
+                    if result and (result.get('nodes') or result.get('edges')):
+                        return result
+                except:
+                    pass
+        
+        # If no direct method worked, use combined graph approach
+        graph = get_combined_graph()
+        
+        if graph is None:
             return {"nodes": [], "edges": []}
+        
+        # Get subgraph starting from the label
+        nodes = set()
+        edges = []
+        
+        # Simple BFS to get nodes within max_depth
+        if hasattr(graph, 'has_node') and graph.has_node(label):
+            visited = set()
+            queue = [(label, 0)]
+            
+            while queue and len(nodes) < max_nodes:
+                current_node, depth = queue.pop(0)
+                
+                if current_node in visited or depth > max_depth:
+                    continue
+                    
+                visited.add(current_node)
+                nodes.add(current_node)
+                
+                # Get neighbors
+                if hasattr(graph, 'neighbors'):
+                    for neighbor in graph.neighbors(current_node):
+                        if neighbor not in visited and depth + 1 <= max_depth:
+                            queue.append((neighbor, depth + 1))
+                            edges.append({"source": current_node, "target": neighbor})
+        
+        # Build response format
+        node_list = []
+        for node in nodes:
+            node_data = {"id": node, "label": node}
+            # Try to get additional node data
+            if hasattr(graph, 'nodes') and hasattr(graph.nodes, '__getitem__'):
+                try:
+                    node_attrs = graph.nodes[node]
+                    node_data.update(node_attrs)
+                except:
+                    pass
+            node_list.append(node_data)
+        
+        return {
+            "nodes": node_list,
+            "edges": edges
+        }
             
     except Exception as e:
         print(f"Error getting knowledge graph for label '{label}': {str(e)}")
@@ -1097,17 +1134,21 @@ async def check_entity_exists(
         Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
     """
     try:
-        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-            graph_storage = rag_instance.chunk_entity_relation_graph
-            graph = get_graph_from_storage(graph_storage)
-            
-            if graph:
-                if hasattr(graph, 'has_node'):
-                    exists = await graph.has_node(name) if asyncio.iscoroutinefunction(graph.has_node) else graph.has_node(name)
-                    return {"exists": exists}
-                elif hasattr(graph, '__contains__'):
-                    exists = name in graph
-                    return {"exists": exists}
+        # Check all workspaces for the entity
+        for workspace_name, rag in workspace_instances.items():
+            if hasattr(rag, 'chunk_entity_relation_graph'):
+                graph_storage = rag.chunk_entity_relation_graph
+                graph = get_graph_from_storage(graph_storage)
+                
+                if graph:
+                    if hasattr(graph, 'has_node'):
+                        exists = await graph.has_node(name) if asyncio.iscoroutinefunction(graph.has_node) else graph.has_node(name)
+                        if exists:
+                            return {"exists": True, "workspace": workspace_name}
+                    elif hasattr(graph, '__contains__'):
+                        exists = name in graph
+                        if exists:
+                            return {"exists": True, "workspace": workspace_name}
         
         return {"exists": False}
     except Exception as e:
@@ -1247,20 +1288,30 @@ async def update_relation(request: RelationUpdateRequest):
 
 @app.get("/graph/status")
 async def get_graph_status():
-    """Get the current status of the knowledge graph"""
+    """Get the combined status of knowledge graphs from all workspaces"""
     try:
-        if hasattr(rag_instance, 'chunk_entity_relation_graph'):
-            graph_storage = rag_instance.chunk_entity_relation_graph
-            graph = get_graph_from_storage(graph_storage)
-            
-            status = {
-                "exists": True,
-                "type": type(graph_storage).__name__,
-                "graph_type": type(graph).__name__ if graph else "None",
-                "nodes": graph.number_of_nodes() if graph and hasattr(graph, 'number_of_nodes') else 0,
-                "edges": graph.number_of_edges() if graph and hasattr(graph, 'number_of_edges') else 0,
-                "storage_type": type(rag_instance.graph_storage).__name__ if hasattr(rag_instance, 'graph_storage') else "Unknown"
-            }
+        # Get combined graph from all workspaces
+        combined_graph = get_combined_graph()
+        
+        status = {
+            "exists": combined_graph is not None and combined_graph.number_of_nodes() > 0,
+            "type": "CombinedGraph",
+            "graph_type": type(combined_graph).__name__ if combined_graph else "None",
+            "nodes": combined_graph.number_of_nodes() if combined_graph and hasattr(combined_graph, 'number_of_nodes') else 0,
+            "edges": combined_graph.number_of_edges() if combined_graph and hasattr(combined_graph, 'number_of_edges') else 0,
+            "workspaces": len(workspace_instances),
+            "workspace_details": {}
+        }
+        
+        # Add per-workspace details
+        for workspace_name, rag in workspace_instances.items():
+            if hasattr(rag, 'chunk_entity_relation_graph'):
+                graph_storage = rag.chunk_entity_relation_graph
+                graph = get_graph_from_storage(graph_storage)
+                status["workspace_details"][workspace_name] = {
+                    "nodes": graph.number_of_nodes() if graph and hasattr(graph, 'number_of_nodes') else 0,
+                    "edges": graph.number_of_edges() if graph and hasattr(graph, 'number_of_edges') else 0
+                }
             
             # Check all relevant files
             working_dir = os.getenv("WORKING_DIR", "/app/data/rag_storage")
