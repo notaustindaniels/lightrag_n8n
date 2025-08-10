@@ -317,7 +317,7 @@ def get_all_documents_metadata():
         all_metadata.update(metadata)
     return all_metadata
 
-def get_combined_graph():
+async def get_combined_graph():
     """Combine graphs from all workspaces into a single graph"""
     combined_graph = nx.Graph()
     
@@ -337,8 +337,8 @@ def get_combined_graph():
             graph_storage = rag.chunk_entity_relation_graph
             print(f"  Graph storage type: {type(graph_storage)}")
             
-            # Try to get the actual graph
-            workspace_graph = get_graph_from_storage(graph_storage)
+            # Try to get the actual graph (now async)
+            workspace_graph = await get_graph_from_storage(graph_storage)
             
             if workspace_graph:
                 print(f"  Successfully extracted graph from storage")
@@ -597,7 +597,7 @@ def generate_display_name_from_file_path(file_path: str, doc_id: str) -> str:
     else:
         return f"text/{doc_id[:8]}..."
 
-def get_graph_from_storage(storage_or_graph):
+async def get_graph_from_storage(storage_or_graph):
     """Safely get NetworkX graph from storage object or return graph directly"""
     if storage_or_graph is None:
         return None
@@ -612,13 +612,27 @@ def get_graph_from_storage(storage_or_graph):
         except AttributeError:
             pass
     
-    # Try to get graph from storage object
+    # For NetworkXStorage, use the proper async method
+    if hasattr(storage_or_graph, '_get_graph'):
+        try:
+            # This is the NetworkXStorage class from lightrag
+            graph = await storage_or_graph._get_graph()
+            return graph
+        except Exception as e:
+            print(f"Error getting graph from NetworkXStorage: {e}")
+    
+    # Try to get graph from storage object (non-async methods)
     if hasattr(storage_or_graph, '_graph'):
         return storage_or_graph._graph
     elif hasattr(storage_or_graph, 'graph'):
         return storage_or_graph.graph
     elif hasattr(storage_or_graph, 'get_graph'):
-        return storage_or_graph.get_graph()
+        # Check if get_graph is async
+        import inspect
+        if inspect.iscoroutinefunction(storage_or_graph.get_graph):
+            return await storage_or_graph.get_graph()
+        else:
+            return storage_or_graph.get_graph()
     elif hasattr(storage_or_graph, 'data'):
         return storage_or_graph.data
     
@@ -1166,7 +1180,7 @@ async def debug_workspaces():
     
     # Check combined graph
     try:
-        combined = get_combined_graph()
+        combined = await get_combined_graph()
         debug_info["combined_graph"] = {
             "nodes": combined.number_of_nodes() if hasattr(combined, 'number_of_nodes') else 0,
             "edges": combined.number_of_edges() if hasattr(combined, 'number_of_edges') else 0
@@ -1239,7 +1253,7 @@ async def get_knowledge_graph(
         
         # Use combined graph approach
         print("Using combined graph approach...")
-        graph = get_combined_graph()
+        graph = await get_combined_graph()
         
         if graph is None or graph.number_of_nodes() == 0:
             print("No graph data available")
@@ -1485,7 +1499,7 @@ async def get_graph_status():
     """Get the combined status of knowledge graphs from all workspaces"""
     try:
         # Get combined graph from all workspaces
-        combined_graph = get_combined_graph()
+        combined_graph = await get_combined_graph()
         
         status = {
             "exists": combined_graph is not None and combined_graph.number_of_nodes() > 0,
@@ -1997,7 +2011,14 @@ async def insert_text_enhanced(request: EnhancedTextInsertRequest):
                             try:
                                 if hasattr(rag, 'chunk_entity_relation_graph'):
                                     graph_storage = rag.chunk_entity_relation_graph
-                                    graph = get_graph_from_storage(graph_storage)
+                                    
+                                    # Call index_done_callback to persist the graph
+                                    if hasattr(graph_storage, 'index_done_callback'):
+                                        await graph_storage.index_done_callback()
+                                        print(f"Called index_done_callback on graph storage")
+                                    
+                                    # Also try to get and save the graph directly
+                                    graph = await get_graph_from_storage(graph_storage)
                                     if graph and hasattr(graph, 'number_of_nodes'):
                                         graphml_path = os.path.join(rag.working_dir, "graph_chunk_entity_relation.graphml")
                                         nx.write_graphml(graph, graphml_path)
@@ -2095,7 +2116,14 @@ async def insert_text(request: TextInsertRequest):
                             try:
                                 if hasattr(rag, 'chunk_entity_relation_graph'):
                                     graph_storage = rag.chunk_entity_relation_graph
-                                    graph = get_graph_from_storage(graph_storage)
+                                    
+                                    # Call index_done_callback to persist the graph
+                                    if hasattr(graph_storage, 'index_done_callback'):
+                                        await graph_storage.index_done_callback()
+                                        print(f"Called index_done_callback on graph storage")
+                                    
+                                    # Also try to get and save the graph directly
+                                    graph = await get_graph_from_storage(graph_storage)
                                     if graph and hasattr(graph, 'number_of_nodes'):
                                         graphml_path = os.path.join(rag.working_dir, "graph_chunk_entity_relation.graphml")
                                         nx.write_graphml(graph, graphml_path)
