@@ -154,7 +154,10 @@ class WorkspaceManager:
     def extract_workspace_from_doc_id(doc_id: str) -> str:
         """Extract workspace name from document ID format [workspace] filename"""
         if doc_id.startswith('[') and ']' in doc_id:
-            return doc_id.split(']')[0][1:]
+            workspace = doc_id.split(']')[0][1:]
+            # Normalize workspace name - replace dots with underscores for file system compatibility
+            # but keep the original name for display
+            return workspace
         return default_workspace
     
     @staticmethod
@@ -291,12 +294,19 @@ def get_combined_graph():
     """Combine graphs from all workspaces into a single graph"""
     combined_graph = nx.Graph()
     
+    print(f"DEBUG: Combining graphs from {len(workspace_instances)} workspaces: {list(workspace_instances.keys())}")
+    
     for workspace_name, rag in workspace_instances.items():
+        print(f"DEBUG: Processing workspace '{workspace_name}'")
         if hasattr(rag, 'chunk_entity_relation_graph'):
             graph_storage = rag.chunk_entity_relation_graph
             workspace_graph = get_graph_from_storage(graph_storage)
             
             if workspace_graph and hasattr(workspace_graph, 'nodes'):
+                node_count = workspace_graph.number_of_nodes() if hasattr(workspace_graph, 'number_of_nodes') else 0
+                edge_count = workspace_graph.number_of_edges() if hasattr(workspace_graph, 'number_of_edges') else 0
+                print(f"DEBUG: Workspace '{workspace_name}' has {node_count} nodes and {edge_count} edges")
+                
                 # Add nodes with workspace information
                 for node in workspace_graph.nodes(data=True):
                     node_id = node[0]
@@ -313,6 +323,14 @@ def get_combined_graph():
                     # Add workspace info to edge data
                     edge_data['workspace'] = workspace_name
                     combined_graph.add_edge(source, target, **edge_data)
+            else:
+                print(f"DEBUG: Workspace '{workspace_name}' has no graph or nodes")
+        else:
+            print(f"DEBUG: Workspace '{workspace_name}' has no chunk_entity_relation_graph attribute")
+    
+    total_nodes = combined_graph.number_of_nodes() if hasattr(combined_graph, 'number_of_nodes') else 0
+    total_edges = combined_graph.number_of_edges() if hasattr(combined_graph, 'number_of_edges') else 0
+    print(f"DEBUG: Combined graph has {total_nodes} nodes and {total_edges} edges")
     
     return combined_graph
 
@@ -925,6 +943,10 @@ async def list_workspaces():
     workspaces = WorkspaceManager.list_workspaces()
     workspace_details = []
     
+    # Debug logging
+    print(f"DEBUG /workspaces: Active instances: {list(workspace_instances.keys())}")
+    print(f"DEBUG /workspaces: Metadata keys: {list(workspace_metadata.keys())}")
+    
     for ws in workspaces:
         metadata = workspace_metadata.get(ws, {})
         workspace_details.append({
@@ -937,7 +959,11 @@ async def list_workspaces():
     return {
         "workspaces": workspace_details,
         "total": len(workspaces),
-        "default_workspace": default_workspace
+        "default_workspace": default_workspace,
+        "debug": {
+            "active_instances": list(workspace_instances.keys()),
+            "metadata_workspaces": list(workspace_metadata.keys())
+        }
     }
 
 @app.post("/workspaces/{workspace_name}")
@@ -977,8 +1003,13 @@ async def delete_workspace(workspace_name: str):
 @app.get("/workspaces/{workspace_name}/stats")
 async def get_workspace_stats(workspace_name: str):
     """Get statistics for a specific workspace"""
+    # URL decode the workspace name to handle spaces
+    from urllib.parse import unquote
+    workspace_name = unquote(workspace_name)
+    
     if workspace_name not in WorkspaceManager.list_workspaces():
-        raise HTTPException(status_code=404, detail=f"Workspace '{workspace_name}' not found")
+        # Try to create it if it doesn't exist
+        await WorkspaceManager.create_workspace(workspace_name)
     
     # Get workspace instance
     rag = await WorkspaceManager.get_or_create_instance(workspace_name)
@@ -996,18 +1027,68 @@ async def get_workspace_stats(workspace_name: str):
     }
     
     # Try to get graph stats if available
-    if rag and hasattr(rag, 'graph_storage'):
+    if rag and hasattr(rag, 'chunk_entity_relation_graph'):
         try:
-            graph = get_graph_from_storage(rag.graph_storage)
+            graph_storage = rag.chunk_entity_relation_graph
+            graph = get_graph_from_storage(graph_storage)
             if graph:
                 stats["graph_stats"] = {
                     "nodes": graph.number_of_nodes(),
                     "edges": graph.number_of_edges()
                 }
-        except:
-            pass
+                # Add sample nodes for debugging
+                sample_nodes = list(graph.nodes())[:5] if hasattr(graph, 'nodes') else []
+                stats["sample_nodes"] = sample_nodes
+        except Exception as e:
+            stats["graph_error"] = str(e)
     
     return stats
+
+@app.get("/workspaces/debug")
+async def debug_workspaces():
+    """Debug endpoint to understand workspace and graph issues"""
+    debug_info = {
+        "active_workspaces": list(workspace_instances.keys()),
+        "workspace_metadata_keys": list(workspace_metadata.keys()),
+        "workspace_details": {}
+    }
+    
+    # Check each workspace
+    for ws_name in list(workspace_instances.keys()):
+        rag = workspace_instances[ws_name]
+        ws_info = {
+            "has_chunk_entity_relation_graph": hasattr(rag, 'chunk_entity_relation_graph'),
+            "has_graph_storage": hasattr(rag, 'graph_storage'),
+            "working_dir": rag.working_dir if hasattr(rag, 'working_dir') else None,
+            "workspace_param": rag.workspace if hasattr(rag, 'workspace') else None
+        }
+        
+        if hasattr(rag, 'chunk_entity_relation_graph'):
+            try:
+                graph_storage = rag.chunk_entity_relation_graph
+                graph = get_graph_from_storage(graph_storage)
+                if graph:
+                    ws_info["graph_nodes"] = graph.number_of_nodes() if hasattr(graph, 'number_of_nodes') else 0
+                    ws_info["graph_edges"] = graph.number_of_edges() if hasattr(graph, 'number_of_edges') else 0
+                    ws_info["sample_nodes"] = list(graph.nodes())[:3] if hasattr(graph, 'nodes') else []
+                else:
+                    ws_info["graph"] = "None"
+            except Exception as e:
+                ws_info["graph_error"] = str(e)
+        
+        debug_info["workspace_details"][ws_name] = ws_info
+    
+    # Check combined graph
+    try:
+        combined = get_combined_graph()
+        debug_info["combined_graph"] = {
+            "nodes": combined.number_of_nodes() if hasattr(combined, 'number_of_nodes') else 0,
+            "edges": combined.number_of_edges() if hasattr(combined, 'number_of_edges') else 0
+        }
+    except Exception as e:
+        debug_info["combined_graph_error"] = str(e)
+    
+    return debug_info
 
 # Graph endpoints
 @app.get("/graph/label/list")
