@@ -24,7 +24,6 @@ RUN git clone https://github.com/HKUDS/LightRAG.git /tmp/lightrag
 COPY lightrag_extended_api.py /app/
 COPY query_routes.py /app/
 COPY migrate_metadata.py /app/
-COPY startup_wrapper.py /app/
 COPY download_webui.sh /app/
 COPY build_webui.sh /app/
 
@@ -47,5 +46,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose the port
 EXPOSE 8080
 
-# Run the extended API server using startup wrapper
-CMD ["python", "/app/startup_wrapper.py"]
+# Run the extended API server
+CMD ["python", "/app/lightrag_extended_api.py"]
