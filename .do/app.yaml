@@ -29,7 +29,7 @@ services:
     value: https://api.openai.com/v1
   - key: LLM_MODEL
     scope: RUN_TIME
-    value: gpt-4o-mini
+    value: gpt-5-nano
   - key: EMBEDDING_MODEL
     scope: RUN_TIME
     value: text-embedding-ada-002
