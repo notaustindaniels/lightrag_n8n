@@ -1054,7 +1054,9 @@ app = FastAPI(
 
 # Import and include query routes
 from query_routes import router as query_router
+from enhanced_query_route import router as debug_router
 app.include_router(query_router)
+app.include_router(debug_router)
 
 # Add CORS middleware
 app.add_middleware(
