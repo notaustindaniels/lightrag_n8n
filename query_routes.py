@@ -10,6 +10,7 @@ router = APIRouter()
 
 class FilteredQueryRequest(BaseModel):
     query: str
+    workspace: Optional[str] = None  # Added workspace parameter
     sources: Optional[List[str]] = None
     mode: str = "hybrid"
     stream: bool = False
@@ -416,74 +417,34 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
         workspace_instances, WorkspaceManager = get_workspace_instances()
         default_workspace = get_default_workspace()
         
-        if not request.sources:
-            # Query the default workspace if no sources specified
-            rag = await WorkspaceManager.get_or_create_instance(default_workspace)
-            param = QueryParam(
-                mode=request.mode,
-                stream=request.stream
-            )
+        # Determine which workspace to use
+        # Priority: workspace parameter > first source > default workspace
+        target_workspace = request.workspace
+        if not target_workspace and request.sources:
+            target_workspace = request.sources[0]
+        if not target_workspace:
+            target_workspace = default_workspace
             
-            result = await rag.aquery(request.query, param=param)
-            
-            return {
-                "query": request.query,
-                "response": result,
-                "mode": request.mode,
-                "workspace": default_workspace
-            }
+        # Query the specified workspace
+        rag = await WorkspaceManager.get_or_create_instance(target_workspace)
+        param = QueryParam(
+            mode=request.mode,
+            stream=request.stream,
+            only_need_context=request.only_need_context,
+            response_type=request.response_type,
+            top_k=request.top_k,
+            max_token_for_text_unit=request.max_token_for_text_unit,
+            max_token_for_global_context=request.max_token_for_global_context,
+            max_token_for_local_context=request.max_token_for_local_context
+        )
         
-        # Query specific workspaces (sources)
-        results = []
-        for source in request.sources:
-            # Each source is a workspace
-            if source not in WorkspaceManager.list_workspaces():
-                continue
-            
-            rag = await WorkspaceManager.get_or_create_instance(source)
-            param = QueryParam(
-                mode=request.mode,
-                stream=request.stream
-            )
-            
-            # Query this workspace
-            result = await rag.aquery(request.query, param=param)
-            results.append({
-                "workspace": source,
-                "response": result
-            })
-        
-        if not results:
-            return {
-                "query": request.query,
-                "response": f"No documents found for the specified sources: {', '.join(request.sources)}",
-                "mode": request.mode,
-                "sources_filtered": request.sources,
-                "documents_found": 0
-            }
-        
-        # If single workspace, return its result directly
-        if len(results) == 1:
-            return {
-                "query": request.query,
-                "response": results[0]["response"],
-                "mode": request.mode,
-                "workspace": results[0]["workspace"],
-                "sources_filtered": request.sources
-            }
-        
-        # For multiple workspaces, combine results
-        combined_response = "\n\n".join([
-            f"[From {r['workspace']}]:\n{r['response']}" 
-            for r in results
-        ])
+        result = await rag.aquery(request.query, param=param)
         
         return {
             "query": request.query,
-            "response": combined_response,
+            "response": result,
             "mode": request.mode,
-            "sources_filtered": request.sources,
-            "workspaces_queried": [r["workspace"] for r in results]
+            "workspace": target_workspace
         }
         
     except Exception as e:
