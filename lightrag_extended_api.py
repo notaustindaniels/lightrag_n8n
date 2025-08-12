@@ -82,6 +82,9 @@ class QueryRequest(BaseModel):
     mode: str = "hybrid"
     stream: bool = False
     workspace: Optional[str] = None  # Optional workspace to query from
+    only_need_context: bool = False  # If True, returns raw context without LLM processing
+    response_type: str = "Multiple Paragraphs"  # Response format
+    top_k: int = 10  # Number of top results to retrieve
 
 # Graph models
 class EntityUpdateRequest(BaseModel):
@@ -3191,7 +3194,10 @@ async def query_documents(request: QueryRequest):
         # Create query parameters
         query_param = QueryParam(
             mode=request.mode,
-            stream=False
+            stream=False,
+            only_need_context=request.only_need_context,
+            response_type=request.response_type,
+            top_k=request.top_k
         )
         
         # Execute query
@@ -3257,7 +3263,10 @@ async def query_documents_stream(request: QueryRequest):
             # Create query parameters with streaming
             query_param = QueryParam(
                 mode=request.mode,
-                stream=True
+                stream=True,
+                only_need_context=request.only_need_context,
+                response_type=request.response_type,
+                top_k=request.top_k
             )
             
             # Execute streaming query
@@ -3350,6 +3359,60 @@ async def scan_for_documents():
         
     except Exception as e:
         print(f"Error scanning documents: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/query/context")
+async def query_context_only(request: QueryRequest):
+    """Query documents and return only the raw retrieved context without LLM processing
+    
+    This endpoint always returns the raw context to help debug retrieval issues.
+    
+    Args:
+        request: Query request with query string, mode, and optional workspace
+    
+    Returns:
+        Raw context from LightRAG retrieval
+    """
+    try:
+        # Use specified workspace, or default if not provided
+        actual_workspace = request.workspace if request.workspace else default_workspace
+        
+        # Get or create the specified workspace
+        rag = await WorkspaceManager.get_or_create_instance(actual_workspace)
+        print(f"Getting raw context from workspace: {actual_workspace}")
+        
+        # Log workspace details for debugging
+        if actual_workspace in workspace_metadata:
+            print(f"Workspace {actual_workspace} has {len(workspace_metadata[actual_workspace])} documents in metadata")
+        
+        # Force only_need_context to True for this endpoint
+        query_param = QueryParam(
+            mode=request.mode,
+            stream=False,
+            only_need_context=True,  # Always return raw context
+            response_type=request.response_type,
+            top_k=request.top_k
+        )
+        
+        # Execute query
+        context = await rag.aquery(request.query, param=query_param)
+        
+        # Parse context if it's a string
+        context_info = {
+            "raw_context": context,
+            "context_length": len(str(context)) if context else 0,
+            "has_entities": "entities" in str(context).lower() if context else False,
+            "has_relationships": "relationship" in str(context).lower() if context else False,
+            "workspace": actual_workspace,
+            "mode": request.mode,
+            "top_k": request.top_k
+        }
+        
+        return context_info
+        
+    except Exception as e:
+        print(f"Error in /query/context: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
