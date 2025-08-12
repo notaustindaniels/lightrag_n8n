@@ -3178,20 +3178,15 @@ async def query_documents(request: QueryRequest):
     """
     try:
         # Use specified workspace, or default if not provided
-        if request.workspace:
-            # Get or create the specified workspace
-            rag = await WorkspaceManager.get_or_create_instance(request.workspace)
-            print(f"Querying workspace: {request.workspace}")
-        else:
-            # Use default workspace or first available workspace
-            if default_workspace in workspace_instances:
-                rag = workspace_instances[default_workspace]
-            elif workspace_instances:
-                rag = list(workspace_instances.values())[0]
-            else:
-                # Create default instance if none exists
-                rag = await WorkspaceManager.get_or_create_instance(default_workspace)
-            print(f"Querying default workspace: {default_workspace}")
+        actual_workspace = request.workspace if request.workspace else default_workspace
+        
+        # Get or create the specified workspace
+        rag = await WorkspaceManager.get_or_create_instance(actual_workspace)
+        print(f"Querying workspace: {actual_workspace}")
+        
+        # Log workspace details for debugging
+        if actual_workspace in workspace_metadata:
+            print(f"Workspace {actual_workspace} has {len(workspace_metadata[actual_workspace])} documents in metadata")
         
         # Create query parameters
         query_param = QueryParam(
@@ -3202,11 +3197,25 @@ async def query_documents(request: QueryRequest):
         # Execute query
         result = await rag.aquery(request.query, param=query_param)
         
+        # Check if we got a meaningful response
+        if "[no-context]" in str(result):
+            # Try to provide more debugging info
+            print(f"Got [no-context] response for workspace {actual_workspace}")
+            # Check if the workspace has any actual data
+            if hasattr(rag, 'doc_status') and rag.doc_status:
+                try:
+                    all_docs = await rag.doc_status.get_all()
+                    if all_docs:
+                        print(f"Workspace has {len(all_docs)} documents in doc_status")
+                        print(f"Sample doc IDs: {list(all_docs.keys())[:3]}")
+                except Exception as e:
+                    print(f"Error checking doc_status: {e}")
+        
         return {
             "status": "success",
             "response": result,
             "mode": request.mode,
-            "workspace": request.workspace or default_workspace
+            "workspace": actual_workspace
         }
         
     except Exception as e:
@@ -3341,6 +3350,89 @@ async def scan_for_documents():
         
     except Exception as e:
         print(f"Error scanning documents: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/workspace/{workspace_name}")
+async def debug_workspace(workspace_name: str):
+    """Debug endpoint to check workspace contents
+    
+    Args:
+        workspace_name: Name of the workspace to debug
+    
+    Returns:
+        Detailed information about the workspace contents
+    """
+    try:
+        debug_info = {
+            "workspace": workspace_name,
+            "exists": workspace_name in workspace_instances,
+            "metadata_count": 0,
+            "storage_info": {},
+            "sample_entities": [],
+            "sample_relationships": [],
+            "sample_chunks": [],
+            "errors": []
+        }
+        
+        # Check if workspace exists
+        if workspace_name not in workspace_instances:
+            # Try to create it
+            await WorkspaceManager.ensure_workspace_exists(workspace_name)
+        
+        if workspace_name in workspace_instances:
+            rag = workspace_instances[workspace_name]
+            
+            # Check metadata
+            if workspace_name in workspace_metadata:
+                debug_info["metadata_count"] = len(workspace_metadata[workspace_name])
+                debug_info["metadata_sample"] = list(workspace_metadata[workspace_name].keys())[:5]
+            
+            # Check entities
+            try:
+                if hasattr(rag, 'entities_vdb') and rag.entities_vdb:
+                    # Try to get some data
+                    test_query_result = await rag.entities_vdb.query("test", top_k=3)
+                    if test_query_result:
+                        debug_info["sample_entities"] = [str(e)[:100] for e in test_query_result]
+                    debug_info["storage_info"]["has_entities"] = True
+            except Exception as e:
+                debug_info["errors"].append(f"Entity check error: {str(e)}")
+            
+            # Check relationships
+            try:
+                if hasattr(rag, 'relationships_vdb') and rag.relationships_vdb:
+                    test_query_result = await rag.relationships_vdb.query("test", top_k=3)
+                    if test_query_result:
+                        debug_info["sample_relationships"] = [str(r)[:100] for r in test_query_result]
+                    debug_info["storage_info"]["has_relationships"] = True
+            except Exception as e:
+                debug_info["errors"].append(f"Relationship check error: {str(e)}")
+            
+            # Check chunks
+            try:
+                if hasattr(rag, 'chunks_vdb') and rag.chunks_vdb:
+                    test_query_result = await rag.chunks_vdb.query("test", top_k=3)
+                    if test_query_result:
+                        debug_info["sample_chunks"] = [str(c)[:100] for c in test_query_result]
+                    debug_info["storage_info"]["has_chunks"] = True
+            except Exception as e:
+                debug_info["errors"].append(f"Chunk check error: {str(e)}")
+            
+            # Check doc status
+            try:
+                if hasattr(rag, 'doc_status') and rag.doc_status:
+                    all_docs = await rag.doc_status.get_all()
+                    if all_docs:
+                        debug_info["storage_info"]["doc_count"] = len(all_docs)
+                        debug_info["storage_info"]["doc_ids"] = list(all_docs.keys())[:5]
+            except Exception as e:
+                debug_info["errors"].append(f"Doc status check error: {str(e)}")
+        
+        return debug_info
+        
+    except Exception as e:
+        print(f"Error in debug_workspace: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
