@@ -17,9 +17,6 @@ class FilteredQueryRequest(BaseModel):
     only_need_context: bool = False
     response_type: str = "default"
     top_k: int = 50
-    max_token_for_text_unit: int = 4000
-    max_token_for_global_context: int = 4000
-    max_token_for_local_context: int = 4000
 
 class SourceListResponse(BaseModel):
     sources: List[Dict[str, Any]]
@@ -432,10 +429,7 @@ async def query_with_optional_filtering(request: FilteredQueryRequest):
             stream=request.stream,
             only_need_context=request.only_need_context,
             response_type=request.response_type,
-            top_k=request.top_k,
-            max_token_for_text_unit=request.max_token_for_text_unit,
-            max_token_for_global_context=request.max_token_for_global_context,
-            max_token_for_local_context=request.max_token_for_local_context
+            top_k=request.top_k
         )
         
         result = await rag.aquery(request.query, param=param)
@@ -468,10 +462,7 @@ async def query_stream_with_optional_filtering(request: FilteredQueryRequest):
                 stream=True,
                 only_need_context=request.only_need_context,
                 response_type=request.response_type,
-                top_k=request.top_k,
-                max_token_for_text_unit=request.max_token_for_text_unit,
-                max_token_for_global_context=request.max_token_for_global_context,
-                max_token_for_local_context=request.max_token_for_local_context
+                top_k=request.top_k
             )
             
             result = await rag_instance.aquery(request.query, param=param)
